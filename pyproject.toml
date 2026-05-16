@@ -5,8 +5,14 @@ description = "Platform-neutral hook loop runtime experiments"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+hook-loop = "hook_loop.cli:main"
+
 [dependency-groups]
 dev = ["pytest>=8"]
+
+[tool.uv]
+package = true
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
