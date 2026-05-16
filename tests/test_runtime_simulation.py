@@ -1,4 +1,5 @@
 from hook_loop.evaluator import FakeEvaluator, Verdict
+from hook_loop.events import new_event
 from hook_loop.hooks import HookBus, HookContext, HookDecision
 from hook_loop.runtime import AgentStep, FakeAgent, LoopRuntime, RuntimeBudget
 from hook_loop.schema import LoopDefinition
@@ -56,6 +57,26 @@ def test_runtime_reaches_done_on_pass(tmp_path):
     assert recover_current_state(runtime.store.read_all()) == "done"
 
 
+def test_runtime_does_not_exhaust_budget_when_final_turn_reaches_done(tmp_path):
+    runtime = LoopRuntime(
+        definition=delivery_definition(),
+        store=JsonlEventLog(tmp_path / "events.jsonl"),
+        agent=FakeAgent(
+            {
+                "backlog": [AgentStep("feature_selected")],
+                "building": [AgentStep("evidence_recorded", {"evidence_id": "e1"})],
+                "evidence_ready": [AgentStep("review_requested")],
+            }
+        ),
+        evaluator=FakeEvaluator([Verdict("PASS", "evidence checked")]),
+    )
+
+    final_state = runtime.run_until_stop(RuntimeBudget(max_turns=3))
+
+    assert final_state == "done"
+    assert runtime.store.read_all()[-1].event_type == "state_transitioned"
+
+
 def test_runtime_reworks_after_needs_work(tmp_path):
     runtime = LoopRuntime(
         definition=delivery_definition(),
@@ -84,6 +105,52 @@ def test_runtime_reworks_after_needs_work(tmp_path):
     assert final_state == "done"
     event_types = [event.event_type for event in runtime.store.read_all()]
     assert event_types.count("verdict_recorded") == 2
+
+
+def test_runtime_resumes_evaluating_state_without_agent_step(tmp_path):
+    log = JsonlEventLog(tmp_path / "events.jsonl")
+    log.append(new_event("s1", "r1", "backlog", "session_initialized", "runtime", {"initial_state": "backlog"}))
+    log.append(
+        new_event(
+            "s1",
+            "r1",
+            "evaluating",
+            "state_transitioned",
+            "runtime",
+            {"from": "evidence_ready", "event": "review_requested", "to": "evaluating"},
+        )
+    )
+    runtime = LoopRuntime(
+        definition=delivery_definition(),
+        store=log,
+        agent=FakeAgent({}),
+        evaluator=FakeEvaluator([Verdict("PASS", "resumed evaluation passed")]),
+        session_id="s1",
+    )
+
+    final_state = runtime.run_until_stop(RuntimeBudget(max_turns=1))
+
+    assert final_state == "done"
+    assert runtime.store.read_all()[-1].event_type == "state_transitioned"
+
+
+def test_runtime_recovers_only_matching_session(tmp_path):
+    log = JsonlEventLog(tmp_path / "events.jsonl")
+    log.append(new_event("other", "r1", "done", "state_transitioned", "runtime", {"to": "done"}))
+
+    runtime = LoopRuntime(
+        definition=delivery_definition(),
+        store=log,
+        agent=FakeAgent({"backlog": []}),
+        evaluator=FakeEvaluator([]),
+        session_id="s1",
+    )
+
+    final_state = runtime.run_until_stop(RuntimeBudget(max_turns=1, max_no_progress_turns=1))
+
+    assert runtime.store.read_all()[1].session_id == "s1"
+    assert runtime.store.read_all()[1].event_type == "session_initialized"
+    assert final_state == "stopped"
 
 
 def test_runtime_stops_on_no_progress_budget(tmp_path):
@@ -124,6 +191,23 @@ def test_runtime_blocks_transition_when_hook_blocks(tmp_path):
     )
 
     final_state = runtime.run_until_stop(RuntimeBudget(max_turns=5))
+
+    assert final_state == "stopped"
+    assert runtime.store.read_all()[-1].event_type == "transition_blocked"
+
+
+def test_runtime_preserves_transition_block_reason_when_no_progress_budget_is_one(tmp_path):
+    hooks = HookBus()
+    hooks.register("before_state_transition", lambda context: HookDecision.block("blocked"))
+    runtime = LoopRuntime(
+        definition=delivery_definition(),
+        store=JsonlEventLog(tmp_path / "events.jsonl"),
+        agent=FakeAgent({"backlog": [AgentStep("feature_selected")]}),
+        evaluator=FakeEvaluator([]),
+        hooks=hooks,
+    )
+
+    final_state = runtime.run_until_stop(RuntimeBudget(max_turns=1, max_no_progress_turns=1))
 
     assert final_state == "stopped"
     assert runtime.store.read_all()[-1].event_type == "transition_blocked"

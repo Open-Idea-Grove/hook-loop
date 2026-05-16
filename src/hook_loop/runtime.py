@@ -5,7 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 from hook_loop.evaluator import FakeEvaluator
-from hook_loop.events import new_event
+from hook_loop.events import Event, new_event
 from hook_loop.hooks import HookBus, HookContext
 from hook_loop.schema import LoopDefinition
 from hook_loop.state_machine import StateMachine, TransitionRejected
@@ -53,15 +53,15 @@ class LoopRuntime:
         self.session_id = session_id
         self.machine = StateMachine(definition)
         self.run_id = str(uuid4())
-        self.current_state = recover_current_state(store.read_all()) or definition.initial_state
+        self.current_state = recover_current_state(self._session_events()) or definition.initial_state
 
     def run_until_stop(self, budget: RuntimeBudget) -> str:
-        if not self.store.read_all():
+        if not self._session_events():
             self._append("session_initialized", "runtime", {"initial_state": self.current_state})
 
         no_progress_turns = 0
         for _ in range(budget.max_turns):
-            if self.current_state in {"done", "stopped"}:
+            if self._is_terminal():
                 return self.current_state
 
             before = self.hooks.fire("before_turn", HookContext(self.current_state, None, {}))
@@ -69,10 +69,20 @@ class LoopRuntime:
                 return self._stop("transition_blocked", {"messages": before.messages})
 
             progressed = False
-            for step in self.agent.next_steps(self.current_state):
-                progressed = self._apply_step(step) or progressed
-                if self.current_state == "evaluating":
-                    progressed = self._evaluate() or progressed
+            if self.current_state == "evaluating":
+                progressed = self._evaluate() or progressed
+            else:
+                for step in self.agent.next_steps(self.current_state):
+                    progressed = self._apply_step(step) or progressed
+                    if self._is_terminal():
+                        return self.current_state
+                    if self.current_state == "evaluating":
+                        progressed = self._evaluate() or progressed
+                    if self._is_terminal():
+                        return self.current_state
+
+            if self._is_terminal():
+                return self.current_state
 
             if progressed:
                 no_progress_turns = 0
@@ -81,6 +91,8 @@ class LoopRuntime:
                 if no_progress_turns >= budget.max_no_progress_turns:
                     return self._stop("budget_exhausted", {"reason": "no productive event"})
 
+        if self._is_terminal():
+            return self.current_state
         return self._stop("budget_exhausted", {"reason": "max_turns"})
 
     def _evaluate(self) -> bool:
@@ -123,6 +135,12 @@ class LoopRuntime:
         self.current_state = "stopped"
         self._append(event_type, "runtime", payload)
         return self.current_state
+
+    def _is_terminal(self) -> bool:
+        return self.current_state in {"done", "stopped"}
+
+    def _session_events(self) -> list[Event]:
+        return [event for event in self.store.read_all() if event.session_id == self.session_id]
 
     def _append(self, event_type: str, actor: str, payload: dict[str, Any]) -> None:
         self.store.append(
