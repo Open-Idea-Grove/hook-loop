@@ -1,0 +1,30 @@
+{
+  "loop": {
+    "id": "software_delivery",
+    "initial_state": "backlog",
+    "states": ["backlog", "building", "evidence_ready", "evaluating", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": ["feature_selected", "evidence_recorded", "review_requested", "evaluator_passed"],
+    "transitions": [
+      {"from": "backlog", "event": "feature_selected", "to": "building"},
+      {"from": "building", "event": "evidence_recorded", "to": "evidence_ready"},
+      {"from": "evidence_ready", "event": "review_requested", "to": "evaluating"},
+      {
+        "from": "evaluating",
+        "event": "evaluator_passed",
+        "to": "done",
+        "guards": ["evidence_bound_to_criteria"]
+      }
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 3, "max_no_progress_turns": 1},
+    "agent_steps": {
+      "backlog": [{"event": "feature_selected"}],
+      "building": [{"event": "evidence_recorded", "payload": {"evidence_id": "e1"}}],
+      "evidence_ready": [{"event": "review_requested"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "evidence checked"}]
+  }
+}

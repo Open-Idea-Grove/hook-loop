@@ -1,7 +1,11 @@
 import json
+from pathlib import Path
 
 import pytest
 
+from hook_loop.evaluator import FakeEvaluator
+from hook_loop.runtime import FakeAgent, LoopRuntime
+from hook_loop.store import JsonlEventLog, recover_current_state
 from hook_loop.dsl import DslError, LoopSpec, load_loop_spec
 
 
@@ -100,3 +104,18 @@ def test_rejects_simulation_step_for_missing_transition(tmp_path):
 
     with pytest.raises(DslError, match="No transition"):
         load_loop_spec(path)
+
+
+def test_software_delivery_example_simulates_to_done(tmp_path):
+    spec = load_loop_spec(Path("examples/software_delivery.json"))
+    runtime = LoopRuntime(
+        definition=spec.definition,
+        store=JsonlEventLog(tmp_path / "events.jsonl"),
+        agent=FakeAgent({state: list(steps) for state, steps in spec.simulation.agent_steps.items()}),
+        evaluator=FakeEvaluator(list(spec.simulation.verdicts)),
+    )
+
+    final_state = runtime.run_until_stop(spec.simulation.budget)
+
+    assert final_state == "done"
+    assert recover_current_state(runtime.store.read_all()) == "done"
