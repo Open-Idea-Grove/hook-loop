@@ -1,5 +1,6 @@
 """Platform-neutral hook loop runtime."""
 
+from hook_loop.dsl import DslError, LoopSpec, SimulationSpec, load_loop_spec
 from hook_loop.events import Event, new_event
 from hook_loop.evaluator import FakeEvaluator, Verdict, parse_verdict
 from hook_loop.hooks import HookBus, HookContext, HookDecision
@@ -12,6 +13,7 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AgentStep",
+    "DslError",
     "Event",
     "FakeAgent",
     "FakeEvaluator",
@@ -20,14 +22,17 @@ __all__ = [
     "HookDecision",
     "JsonlEventLog",
     "LoopDefinition",
+    "LoopSpec",
     "LoopRuntime",
     "RuntimeBudget",
     "SchemaError",
+    "SimulationSpec",
     "StateMachine",
     "Transition",
     "TransitionRejected",
     "Verdict",
     "new_event",
+    "load_loop_spec",
     "parse_verdict",
     "recover_current_state",
 ]
