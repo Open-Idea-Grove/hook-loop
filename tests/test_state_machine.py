@@ -48,6 +48,30 @@ def test_rejects_transition_to_unknown_state():
         LoopDefinition.from_dict(raw)
 
 
+def test_rejects_duplicate_transitions():
+    raw = delivery_schema()
+    raw["transitions"].append({"from": "backlog", "event": "feature_selected", "to": "done"})
+
+    with pytest.raises(SchemaError, match="duplicate transition"):
+        LoopDefinition.from_dict(raw)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("guards", "evidence_bound_to_criteria"),
+        ("actions", "record_evidence"),
+        ("resume_policy", ["resume"]),
+    ],
+)
+def test_rejects_transition_metadata_with_wrong_type(key, value):
+    raw = delivery_schema()
+    raw["transitions"][0][key] = value
+
+    with pytest.raises(SchemaError, match=key):
+        LoopDefinition.from_dict(raw)
+
+
 def test_state_machine_applies_allowed_transition():
     machine = StateMachine(LoopDefinition.from_dict(delivery_schema()))
 

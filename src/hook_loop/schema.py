@@ -39,6 +39,7 @@ class LoopDefinition:
             raise SchemaError(f"initial_state references unknown state: {initial_state}")
 
         transitions = tuple(_transition_from_dict(item) for item in raw.get("transitions", []))
+        transition_keys: set[tuple[str, str]] = set()
         for transition in transitions:
             if transition.from_state not in states:
                 raise SchemaError(f"transition references unknown state: {transition.from_state}")
@@ -46,6 +47,10 @@ class LoopDefinition:
                 raise SchemaError(f"transition references unknown state: {transition.to_state}")
             if transition.event not in events:
                 raise SchemaError(f"transition references unknown event: {transition.event}")
+            transition_key = (transition.from_state, transition.event)
+            if transition_key in transition_keys:
+                raise SchemaError(f"duplicate transition: {transition.from_state}/{transition.event}")
+            transition_keys.add(transition_key)
 
         return cls(
             id=loop_id,
@@ -67,9 +72,9 @@ def _transition_from_dict(raw: dict[str, Any]) -> Transition:
         from_state=_required_str(raw, "from"),
         event=_required_str(raw, "event"),
         to_state=_required_str(raw, "to"),
-        guards=tuple(raw.get("guards", [])),
-        actions=tuple(raw.get("actions", [])),
-        resume_policy=raw.get("resume_policy"),
+        guards=tuple(_optional_str_list(raw, "guards")),
+        actions=tuple(_optional_str_list(raw, "actions")),
+        resume_policy=_optional_str(raw, "resume_policy"),
     )
 
 
@@ -82,6 +87,22 @@ def _required_str(raw: dict[str, Any], key: str) -> str:
 
 def _required_str_list(raw: dict[str, Any], key: str) -> list[str]:
     value = raw.get(key)
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise SchemaError(f"{key} must be a list of non-empty strings")
+    return value
+
+
+def _optional_str(raw: dict[str, Any], key: str) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise SchemaError(f"{key} must be a non-empty string")
+    return value
+
+
+def _optional_str_list(raw: dict[str, Any], key: str) -> list[str]:
+    value = raw.get(key, [])
     if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
         raise SchemaError(f"{key} must be a list of non-empty strings")
     return value
