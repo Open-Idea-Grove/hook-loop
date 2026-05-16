@@ -7,7 +7,7 @@ The current implementation is the B-stage runtime described in:
 - [Design spec](docs/superpowers/specs/2026-05-16-hook-loop-agent-design.md)
 - [Runtime implementation plan](docs/superpowers/plans/2026-05-16-hook-loop-runtime-plan.md)
 
-It does not implement the later DSL/code generator stage yet. The runtime is intentionally small and deterministic so loop behavior can be tested without a real LLM.
+It implements the B-stage runtime plus a minimal C-stage JSON DSL and CLI path. It does not implement generated platform adapters yet. The runtime is intentionally small and deterministic so loop behavior can be tested without a real LLM.
 
 ## What Is Implemented
 
@@ -17,6 +17,8 @@ It does not implement the later DSL/code generator stage yet. The runtime is int
 - In-process hook bus with allow/block/steer decisions.
 - Machine-readable evaluator verdict parsing.
 - Minimal fake-agent runtime simulation for pass, rework, stop, resume, and hook-block flows.
+- JSON DSL loading from `examples/software_delivery.json`.
+- `hook-loop validate` and `hook-loop simulate` CLI commands.
 
 ## Requirements
 
@@ -37,7 +39,7 @@ uv run pytest -q
 Expected result:
 
 ```text
-30 passed
+46 passed
 ```
 
 You can also run focused checks:
@@ -48,6 +50,39 @@ uv run pytest tests/test_event_store.py -q
 uv run pytest tests/test_hooks.py -q
 uv run pytest tests/test_evaluator.py -q
 uv run pytest tests/test_runtime_simulation.py -q
+uv run pytest tests/test_dsl.py -q
+uv run pytest tests/test_cli.py -q
+```
+
+## JSON DSL
+
+The canonical example is [examples/software_delivery.json](examples/software_delivery.json). It contains:
+
+- `loop`: states, terminal states, stop state, events, and transitions.
+- `simulation`: deterministic fake-agent steps, evaluator verdicts, and runtime budget.
+
+Validate it with:
+
+```bash
+uv run hook-loop validate examples/software_delivery.json
+```
+
+Expected output:
+
+```text
+valid: software_delivery
+```
+
+Run the deterministic simulation with:
+
+```bash
+uv run hook-loop simulate examples/software_delivery.json --event-log /private/tmp/hook-loop-example.jsonl
+```
+
+Expected output includes:
+
+```text
+final_state: done
 ```
 
 ## Minimal Runtime Example
@@ -96,6 +131,6 @@ assert runtime.run_until_stop(RuntimeBudget(max_turns=3)) == "done"
 ## Current Boundaries
 
 - No Codex, Claude Code, or pi adapter is included yet.
-- No generated DSL parser is included yet.
+- No generated hook scaffold is included yet.
 - Hook callbacks are in-process contracts, not a security boundary.
 - `FakeAgent` and `FakeEvaluator` exist to make loop semantics deterministic in tests.
