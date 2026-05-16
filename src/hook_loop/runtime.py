@@ -132,12 +132,14 @@ class LoopRuntime:
         return True
 
     def _stop(self, event_type: str, payload: dict[str, Any]) -> str:
-        self.current_state = "stopped"
+        if self.definition.stop_state is None:
+            raise RuntimeError("LoopDefinition requires stop_state for runtime stop")
+        self.current_state = self.definition.stop_state
         self._append(event_type, "runtime", payload)
         return self.current_state
 
     def _is_terminal(self) -> bool:
-        return self.current_state in {"done", "stopped"}
+        return self.current_state in self.definition.terminal_states
 
     def _session_events(self) -> list[Event]:
         return [event for event in self.store.read_all() if event.session_id == self.session_id]

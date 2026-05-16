@@ -32,6 +32,36 @@ def test_loads_valid_loop_definition():
     assert definition.transition_for("backlog", "feature_selected").to_state == "building"
 
 
+def test_loads_terminal_and_stop_states_from_schema():
+    raw = delivery_schema()
+    raw["states"].append("stopped")
+    raw["terminal_states"] = ["done", "stopped"]
+    raw["stop_state"] = "stopped"
+
+    definition = LoopDefinition.from_dict(raw)
+
+    assert definition.terminal_states == ("done", "stopped")
+    assert definition.stop_state == "stopped"
+
+
+def test_rejects_terminal_state_not_in_states():
+    raw = delivery_schema()
+    raw["terminal_states"] = ["missing"]
+
+    with pytest.raises(SchemaError, match="terminal state"):
+        LoopDefinition.from_dict(raw)
+
+
+def test_rejects_stop_state_not_in_terminal_states():
+    raw = delivery_schema()
+    raw["states"].append("stopped")
+    raw["terminal_states"] = ["done"]
+    raw["stop_state"] = "stopped"
+
+    with pytest.raises(SchemaError, match="stop_state"):
+        LoopDefinition.from_dict(raw)
+
+
 def test_rejects_duplicate_states():
     raw = delivery_schema()
     raw["states"].append("backlog")

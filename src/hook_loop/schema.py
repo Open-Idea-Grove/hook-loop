@@ -25,6 +25,8 @@ class LoopDefinition:
     states: tuple[str, ...]
     events: tuple[str, ...]
     transitions: tuple[Transition, ...]
+    terminal_states: tuple[str, ...]
+    stop_state: str | None = None
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "LoopDefinition":
@@ -32,11 +34,27 @@ class LoopDefinition:
         initial_state = _required_str(raw, "initial_state")
         states = tuple(_required_str_list(raw, "states"))
         events = tuple(_required_str_list(raw, "events"))
+        default_terminal_states = [state for state in ("done", "stopped") if state in states]
+        terminal_states = tuple(raw.get("terminal_states", default_terminal_states))
         _reject_duplicates(states, "state")
         _reject_duplicates(events, "event")
+        if not terminal_states or not all(isinstance(item, str) and item for item in terminal_states):
+            raise SchemaError("terminal_states must be a non-empty list of strings")
+        _reject_duplicates(terminal_states, "terminal state")
 
         if initial_state not in states:
             raise SchemaError(f"initial_state references unknown state: {initial_state}")
+        for terminal_state in terminal_states:
+            if terminal_state not in states:
+                raise SchemaError(f"terminal state references unknown state: {terminal_state}")
+        stop_state = raw.get("stop_state")
+        if stop_state is None and "stopped" in terminal_states:
+            stop_state = "stopped"
+        if stop_state is not None:
+            if not isinstance(stop_state, str) or not stop_state:
+                raise SchemaError("stop_state must be a non-empty string")
+            if stop_state not in terminal_states:
+                raise SchemaError(f"stop_state must reference a terminal state: {stop_state}")
 
         transitions = tuple(_transition_from_dict(item) for item in raw.get("transitions", []))
         transition_keys: set[tuple[str, str]] = set()
@@ -58,6 +76,8 @@ class LoopDefinition:
             states=states,
             events=events,
             transitions=transitions,
+            terminal_states=terminal_states,
+            stop_state=stop_state,
         )
 
     def transition_for(self, state: str, event: str) -> Transition:

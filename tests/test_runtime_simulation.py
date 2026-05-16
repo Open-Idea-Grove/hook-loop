@@ -37,6 +37,28 @@ def delivery_definition():
     )
 
 
+def accepted_terminal_definition():
+    return LoopDefinition.from_dict(
+        {
+            "id": "approval_loop",
+            "initial_state": "draft",
+            "states": ["draft", "evaluating", "accepted", "stopped"],
+            "terminal_states": ["accepted", "stopped"],
+            "stop_state": "stopped",
+            "events": ["submit", "evaluator_passed"],
+            "transitions": [
+                {"from": "draft", "event": "submit", "to": "evaluating"},
+                {
+                    "from": "evaluating",
+                    "event": "evaluator_passed",
+                    "to": "accepted",
+                    "guards": ["evidence_bound_to_criteria"],
+                },
+            ],
+        }
+    )
+
+
 def test_runtime_reaches_done_on_pass(tmp_path):
     runtime = LoopRuntime(
         definition=delivery_definition(),
@@ -75,6 +97,17 @@ def test_runtime_does_not_exhaust_budget_when_final_turn_reaches_done(tmp_path):
 
     assert final_state == "done"
     assert runtime.store.read_all()[-1].event_type == "state_transitioned"
+
+
+def test_runtime_uses_schema_terminal_states(tmp_path):
+    runtime = LoopRuntime(
+        definition=accepted_terminal_definition(),
+        store=JsonlEventLog(tmp_path / "events.jsonl"),
+        agent=FakeAgent({"draft": [AgentStep("submit")]}),
+        evaluator=FakeEvaluator([Verdict("PASS", "accepted")]),
+    )
+
+    assert runtime.run_until_stop(RuntimeBudget(max_turns=2)) == "accepted"
 
 
 def test_runtime_reworks_after_needs_work(tmp_path):
