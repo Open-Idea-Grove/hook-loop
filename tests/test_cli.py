@@ -56,3 +56,28 @@ def test_validate_command_rejects_invalid_dsl(tmp_path, capsys):
 
     assert exit_code == 1
     assert "invalid:" in capsys.readouterr().err
+
+
+def test_simulate_command_runs_dsl_simulation(tmp_path, capsys):
+    path = tmp_path / "loop.json"
+    event_log = tmp_path / "events.jsonl"
+    path.write_text(json.dumps(valid_dsl()), encoding="utf-8")
+
+    exit_code = main(["simulate", str(path), "--event-log", str(event_log)])
+
+    assert exit_code == 0
+    assert "final_state: done" in capsys.readouterr().out
+    assert event_log.exists()
+    assert "state_transitioned" in event_log.read_text(encoding="utf-8")
+
+
+def test_simulate_command_reports_runtime_errors(tmp_path, capsys):
+    path = tmp_path / "loop.json"
+    raw = valid_dsl()
+    raw["simulation"]["verdicts"] = []
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    exit_code = main(["simulate", str(path), "--event-log", str(tmp_path / "events.jsonl")])
+
+    assert exit_code == 1
+    assert "simulation failed:" in capsys.readouterr().err
