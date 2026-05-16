@@ -14,9 +14,9 @@
 
 当前仓库已有两份研究笔记：
 
-- `doc/research/pi-autoresearch/readme.md`：实验优化型 loop，重点是 metric、
+- `docs/research/pi-autoresearch/readme.md`：实验优化型 loop，重点是 metric、
   keep/discard、checks、自动 commit/revert、turn-by-turn resume。
-- `doc/research/cwc-long-running-agents/readme.md`：软件交付型 long-running
+- `docs/research/cwc-long-running-agents/readme.md`：软件交付型 long-running
   harness，重点是 default-fail contract、fresh evaluator、handoff 和人工控制。
 
 A 阶段产出一份方法论和参考架构文档，不实现 runtime、runner、hook 脚本或生成器。
@@ -29,7 +29,40 @@ B/C 阶段再分别落地可运行最小框架和用户状态机到 agent scaffo
 - 不追求完整 agent 理论，只覆盖工程上可复用、可验证、可中断、可恢复的 loop 设计。
 - 不把 hook 视为安全边界；安全隔离需要 sandbox、权限模型、只读 evaluator 和工作树隔离。
 
-## 3. 术语表
+## 3. 阶段边界与验收标准
+
+本 spec 同时描述 A/B/C 的连续路线，但后续实施必须分阶段规划，避免把方法论、runtime 和
+generator 混成一个过大的任务。
+
+### 3.1 A 阶段：设计文档
+
+A 阶段已由本文覆盖。验收标准：
+
+- 明确 hook loop agent 的核心术语和设计原则。
+- 明确通用状态机模型、hook 分类和 contract 分类。
+- 明确持久化、恢复、错误处理、预算和人工控制策略。
+- 用实验优化型、软件交付型、通用任务型说明抽象如何落地。
+- 提供非最终 DSL sketch，用于验证后续生成器方向。
+
+### 3.2 B 阶段：最小可运行框架
+
+B 阶段只实现 runtime，不实现用户生成器。验收标准：
+
+- 能读取一个手写状态机 schema。
+- 能执行 fake/headless agent turn，并记录 append-only event log。
+- 能运行 hook bus、basic guards、fake evaluator。
+- 能从 event log 恢复 state。
+- 能通过 loop simulation tests 覆盖 pass、needs-work、no-progress、budget stop 和 operator stop。
+
+### 3.3 C 阶段：用户状态机生成器
+
+C 阶段在 B 阶段 runtime 稳定后开始。验收标准：
+
+- 能从用户 DSL 生成 agent contract、hook payload schema、runner scaffold 和 simulation tests。
+- 生成结果能通过 B 阶段 runtime 的模拟迁移测试。
+- 生成器不绑定具体平台，Codex 只作为首个 adapter target。
+
+## 4. 术语表
 
 **Outer Loop**：包在 agent 外层的调度机制，负责决定继续、返工、停止或切换任务。
 
@@ -47,41 +80,41 @@ B/C 阶段再分别落地可运行最小框架和用户状态机到 agent scaffo
 
 **Event Log**：机器恢复的 append-only source of truth。
 
-## 4. 设计原则
+## 5. 设计原则
 
-### 4.1 先设计状态机，再写 prompt
+### 5.1 先设计状态机，再写 prompt
 
 Prompt 只能指导 agent，不能可靠表达完成条件。每个 hook loop agent 都必须先定义状态、
 事件、guard、action、持久化记录和 resume 策略，再把这些约束注入 agent contract。
 
-### 4.2 自主执行，结构化约束
+### 5.2 自主执行，结构化约束
 
 agent 可以自主选择策略，但关键迁移不能只依赖自然语言声明。完成、保留、回滚、
 返工、停止必须绑定工具结果、event log、evidence、contract store 或 evaluator verdict。
 
-### 4.3 Builder 不能独立验收自己
+### 5.3 Builder 不能独立验收自己
 
 简单实验优化可以由 metric guard 和 correctness checks 处理。软件交付、主观质量或高风险
 任务必须引入 fresh-context evaluator。builder 可以进入 `READY_FOR_REVIEW`，但不能单独进入
 最终 `DONE`。
 
-### 4.4 Conversation 是缓存，不是事实来源
+### 5.4 Conversation 是缓存，不是事实来源
 
 恢复状态必须来自 event log、contract store、evidence ledger、handoff 文件和 git/checkpoint。
 compaction summary 应由持久化状态确定性生成，不依赖 LLM 临时总结。
 
-### 4.5 Hook 是 sidecar，不是主业务
+### 5.5 Hook 是 sidecar，不是主业务
 
 hook 负责门禁、观测、注入、纠偏、预算和收尾。hook 不应承载主业务逻辑，也不应要求 agent
 专门为 hook 填写字段。hook 可以读取 agent 自然产出的 description、verdict、evidence、
 ASI/notes 等材料。
 
-### 4.6 预算和停止条件是一等公民
+### 5.6 预算和停止条件是一等公民
 
 自主 loop 必须有 max turns、max iterations、max failures、rate limit、人工 stop/pause 等
 明确上限。`NEVER STOP` 只能作为 agent 行为提示，不能替代 runtime guard。
 
-## 5. 通用状态机模型
+## 6. 通用状态机模型
 
 通用 hook loop agent 可以抽象为：
 
@@ -106,7 +139,7 @@ record: 写入什么持久化记录
 resume_policy: 是否触发下一轮
 ```
 
-### 5.1 实验优化型映射
+### 6.1 实验优化型映射
 
 ```text
 READY
@@ -125,10 +158,10 @@ READY
 - `discard`、`crash`、`checks_failed` 自动 rollback，但保留 loop state artifacts。
 - 外层 resume 必须要求本 turn 至少发生一次实验记录。
 
-### 5.2 软件交付型映射
+### 6.2 软件交付型映射
 
 ```text
-TODO
+BACKLOG
 → BUILDING
 → EVIDENCE_READY
 → READY_FOR_REVIEW
@@ -144,7 +177,7 @@ TODO
 - evaluator 在 fresh context 中读取 spec、diff、evidence 后输出 `PASS` 或 `NEEDS_WORK`。
 - `NEEDS_WORK` findings 进入下一轮 builder prompt 或 handoff。
 
-### 5.3 通用任务型映射
+### 6.3 通用任务型映射
 
 通用任务型不预设 metric 或 feature。用户必须定义：
 
@@ -155,9 +188,9 @@ TODO
 - 失败和返工路径。
 - 预算和人工控制策略。
 
-## 6. Hook 与 Contract 模型
+## 7. Hook 与 Contract 模型
 
-### 6.1 Hook 分类
+### 7.1 Hook 分类
 
 **Lifecycle Hook**
 
@@ -180,7 +213,7 @@ TODO
 
 提供 stop、pause、budget guard、rate-limit guard、熔断等人工或系统控制。
 
-### 6.2 Contract 分类
+### 7.2 Contract 分类
 
 **Agent Contract**
 
@@ -215,9 +248,9 @@ TODO
 - timeout、stdout、stderr 限制。
 - hook 失败如何记录和处理。
 
-## 7. 数据流、持久化与恢复
+## 8. 数据流、持久化与恢复
 
-### 7.1 Event Log
+### 8.1 Event Log
 
 event log 是机器恢复主线，推荐 append-only。事件类型包括：
 
@@ -246,7 +279,7 @@ operator_stopped
 - payload。
 - payload digest 或证据引用。
 
-### 7.2 Human Handoff
+### 8.2 Human Handoff
 
 handoff 是给人类和 fresh agent 读的材料，不替代 event log。推荐结构：
 
@@ -261,7 +294,7 @@ Open Questions
 Notes
 ```
 
-### 7.3 Evidence Store
+### 8.3 Evidence Store
 
 evidence store 保存不能只靠口头描述的材料：
 
@@ -275,7 +308,7 @@ evidence store 保存不能只靠口头描述的材料：
 
 default-fail contract 的原则是：没有 evidence，不允许 pass。
 
-### 7.4 恢复顺序
+### 8.4 恢复顺序
 
 恢复时按以下顺序：
 
@@ -289,9 +322,9 @@ default-fail contract 的原则是：没有 evidence，不允许 pass。
 
 compaction summary 应从 event log、handoff、ideas/backlog、recent verdicts 确定性生成。
 
-## 8. 错误处理、预算与人工控制
+## 9. 错误处理、预算与人工控制
 
-### 8.1 错误分类
+### 9.1 错误分类
 
 **Task Failure**
 
@@ -311,7 +344,7 @@ productive-event guard、anti-thrash、no-change limit。
 hook 超时、event log 写入失败、compaction 丢状态、git 失败、API rate limit。
 进入 `PAUSED` 或 `NEEDS_OPERATOR`，并记录可诊断错误。
 
-### 8.2 预算
+### 9.2 预算
 
 最小预算模型：
 
@@ -326,7 +359,7 @@ max_context_compactions
 rate_limit_backoff
 ```
 
-### 8.3 人工控制
+### 9.3 人工控制
 
 最小人工控制：
 
@@ -347,7 +380,7 @@ FINALIZE: 从长期运行结果整理成可 review 的产物
 - 是否更新 handoff。
 - 是否通知 human。
 
-## 9. 参考架构
+## 10. 参考架构
 
 后续 B/C 阶段可以落成以下模块：
 
@@ -397,34 +430,34 @@ Generator
 平台中立层只定义状态机、contract、event log、hook 语义。平台 adapter 负责把这些语义映射到
 Codex、Claude Code、pi 或 Agent SDK 的具体事件和工具系统。
 
-## 10. 测试与验证策略
+## 11. 测试与验证策略
 
-### 10.1 State Machine Contract Tests
+### 11.1 State Machine Contract Tests
 
 验证每个状态只接受合法事件，guard 生效，非法迁移被拒绝。例如 `READY` 不能直接进入
 `DONE`，`NEEDS_WORK` 必须带 evaluator finding 才能进入 `REWORK`。
 
-### 10.2 Hook Contract Tests
+### 11.2 Hook Contract Tests
 
 用 mock payload 测试 hook stdin schema、stdout 截断、stderr 处理、timeout、非零退出、
 observability event。hook 失败不能无声吞掉，也不能破坏可恢复状态。
 
-### 10.3 Persistence / Recovery Tests
+### 11.3 Persistence / Recovery Tests
 
 从 event log 重建 state。覆盖 hook event 不污染业务事件、schema version 升级、compaction
 summary 确定性生成、中途崩溃、重复事件、部分写入、handoff 缺失、evidence 缺失。
 
-### 10.4 Loop Simulation Tests
+### 11.4 Loop Simulation Tests
 
 用 fake agent 和 fake evaluator 跑完整 loop，不调用真实 LLM。覆盖 `PASS`、`NEEDS_WORK`、
 连续失败、无 productive event、预算耗尽、operator stop、resume after compaction。
 
-### 10.5 End-to-End Smoke Tests
+### 11.5 End-to-End Smoke Tests
 
 B/C 阶段再加少量真实平台适配测试，例如 Codex adapter 能启动 loop、写 event log、触发
 evaluator、恢复状态。E2E 只测关键路径，不把 LLM 行为作为唯一断言。
 
-### 10.6 Generator Tests
+### 11.6 Generator Tests
 
 生成器方向必须验证：
 
@@ -437,7 +470,7 @@ runner scaffold → simulation pass
 
 核心断言不是“生成了文件”，而是“生成出的 loop 能通过模拟状态迁移和恢复测试”。
 
-## 11. 风险与反模式
+## 12. 风险与反模式
 
 - 只靠 prompt 写 `NEVER STOP`，没有预算、终止策略和外部开关。
 - 外层 resume 只靠“发送用户消息”驱动，缺少 checkpoint/job queue 抽象。
@@ -451,7 +484,7 @@ runner scaffold → simulation pass
   权限的 agent 修改。
 - kill switch 通常只能阻止后续 tool call，不能杀掉已经启动的外部进程。
 
-## 12. 附录：非最终 DSL Sketch
+## 13. 附录：非最终 DSL Sketch
 
 此 DSL 只用于验证抽象能否支持“用户定义状态机 → 生成 hook loop agent”。它不是最终格式承诺。
 
@@ -477,6 +510,7 @@ agent_loop:
   events:
     - id: feature_selected
     - id: evidence_recorded
+    - id: review_requested
     - id: evaluator_passed
     - id: evaluator_failed
     - id: operator_stopped
@@ -488,6 +522,11 @@ agent_loop:
       actions: [load_handoff, inject_agent_contract]
 
     - from: evidence_ready
+      event: review_requested
+      to: evaluating
+      actions: [invoke_fresh_evaluator]
+
+    - from: evaluating
       event: evaluator_failed
       to: needs_work
       actions: [write_findings, update_handoff]
@@ -516,7 +555,7 @@ agent_loop:
     event_log: hook-loop.jsonl
 ```
 
-## 13. B/C 阶段建议
+## 14. B/C 阶段建议
 
 B 阶段先实现最小可运行框架：
 
