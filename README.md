@@ -19,6 +19,9 @@ It implements the B-stage runtime plus a minimal C-stage JSON DSL and CLI path. 
 - Minimal fake-agent runtime simulation for pass, rework, stop, resume, and hook-block flows.
 - JSON DSL loading from `examples/software_delivery.json`.
 - `hook-loop validate` and `hook-loop simulate` CLI commands.
+- Codex-first hook adapter for the software delivery quality loop.
+- `hook-loop codex-hook` for Codex command hooks.
+- `hook-loop codex install` scaffold generation with dry-run by default.
 
 ## Requirements
 
@@ -84,6 +87,53 @@ Expected output includes:
 ```text
 final_state: done
 ```
+
+## Codex Hook Adapter
+
+The Codex adapter is a first MVP for using `hook-loop` patterns inside Codex
+hooks without making the repository root load active hooks during development.
+
+Preview the generated software delivery hook scaffold:
+
+```bash
+uv run hook-loop codex install \
+  --profile software_delivery \
+  --target directory \
+  --destination /tmp/hook-loop-codex-preview
+```
+
+Write the scaffold only when you explicitly opt in:
+
+```bash
+uv run hook-loop codex install \
+  --profile software_delivery \
+  --target directory \
+  --destination /tmp/hook-loop-codex-preview \
+  --write
+```
+
+The generated scaffold contains:
+
+- `.codex/hooks.json`
+- `.codex/hooks/hook_loop_codex.py`
+- `hook-loop.json`
+
+The hook command entrypoint is:
+
+```bash
+uv run hook-loop codex-hook \
+  --event PreToolUse \
+  --config hook-loop.json \
+  --event-log .hook-loop/events.jsonl
+```
+
+The first profile focuses on software delivery:
+
+- `PreToolUse` / `PermissionRequest` block risky shell and protected-path writes.
+- `PostToolUse` records verification evidence from commands such as tests and
+  `git diff --check`.
+- `Stop` requires evidence, verification, and a fresh evaluator `PASS` before
+  allowing the agent to finish.
 
 ## Minimal Runtime Example
 

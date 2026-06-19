@@ -1,5 +1,7 @@
 """Platform-neutral hook loop runtime."""
 
+from hook_loop.codex_adapter import CodexHookResult, handle_codex_hook, normalize_codex_hook_input
+from hook_loop.codex_scaffold import CodexInstallResult, build_codex_scaffold, install_codex_scaffold
 from hook_loop.dsl import DslError, LoopSpec, SimulationSpec, load_loop_spec
 from hook_loop.events import Event, new_event
 from hook_loop.evaluator import FakeEvaluator, Verdict, parse_verdict
@@ -13,6 +15,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AgentStep",
+    "CodexHookResult",
+    "CodexInstallResult",
     "DslError",
     "Event",
     "FakeAgent",
@@ -32,7 +36,11 @@ __all__ = [
     "TransitionRejected",
     "Verdict",
     "new_event",
+    "build_codex_scaffold",
+    "handle_codex_hook",
+    "install_codex_scaffold",
     "load_loop_spec",
+    "normalize_codex_hook_input",
     "parse_verdict",
     "recover_current_state",
 ]

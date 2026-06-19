@@ -81,3 +81,70 @@ def test_simulate_command_reports_runtime_errors(tmp_path, capsys):
 
     assert exit_code == 1
     assert "simulation failed:" in capsys.readouterr().err
+
+
+def test_codex_hook_command_reads_stdin_and_blocks_risky_command(tmp_path, capsys, monkeypatch):
+    path = tmp_path / "loop.json"
+    event_log = tmp_path / "events.jsonl"
+    path.write_text(json.dumps(valid_dsl()), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.stdin",
+        type("FakeStdin", (), {"read": lambda self: json.dumps({
+            "session_id": "session-1",
+            "cwd": str(tmp_path),
+            "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf .git"},
+        })})(),
+    )
+
+    exit_code = main([
+        "codex-hook",
+        "--event",
+        "PreToolUse",
+        "--config",
+        str(path),
+        "--event-log",
+        str(event_log),
+    ])
+
+    assert exit_code == 2
+    assert "risky action" in capsys.readouterr().out
+    assert "hook_fired" in event_log.read_text(encoding="utf-8")
+
+
+def test_codex_install_dry_run_plans_without_writing(tmp_path, capsys):
+    exit_code = main([
+        "codex",
+        "install",
+        "--profile",
+        "software_delivery",
+        "--target",
+        "directory",
+        "--destination",
+        str(tmp_path),
+    ])
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "planned:" in out
+    assert ".codex/hooks.json" in out
+    assert not (tmp_path / ".codex").exists()
+
+
+def test_codex_install_directory_writes_scaffold(tmp_path, capsys):
+    exit_code = main([
+        "codex",
+        "install",
+        "--profile",
+        "software_delivery",
+        "--target",
+        "directory",
+        "--destination",
+        str(tmp_path),
+        "--write",
+    ])
+
+    assert exit_code == 0
+    assert "written:" in capsys.readouterr().out
+    assert (tmp_path / ".codex" / "hooks.json").exists()
+    assert (tmp_path / ".codex" / "hooks" / "hook_loop_codex.py").exists()
