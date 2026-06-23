@@ -7,21 +7,12 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from hook_loop.codex_mapping import SUPPORTED_CODEX_EVENTS, CodexEventMap, RecordSpec, ResolvedRule
+from hook_loop.driver import EventSourcedLoopDriver
+from hook_loop.dsl import LoopSpec
 from hook_loop.events import new_event
 from hook_loop.hooks import HookContext, HookDecision
 from hook_loop.store import JsonlEventLog
-
-
-SUPPORTED_CODEX_EVENTS = {
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "Stop",
-    "PreCompact",
-    "PostCompact",
-}
 
 
 @dataclass(frozen=True)
@@ -58,29 +49,27 @@ def handle_codex_hook(
     event_name: str,
     raw_input: dict[str, Any],
     store: JsonlEventLog,
+    spec: LoopSpec,
 ) -> CodexHookResult:
     context = normalize_codex_hook_input(event_name, raw_input)
-    decision = _decide(context, store)
-    _record_hook_event(store, context, decision)
+    driver = EventSourcedLoopDriver(spec.definition, store, _session_id(context))
+
+    if event_name in {"PreToolUse", "PermissionRequest"}:
+        decision = _pre_action_decision(context)
+    elif event_name == "Stop":
+        decision = _stop_decision(driver)
+    elif event_name in {"SessionStart", "PreCompact", "PostCompact"}:
+        if spec.codex is not None and spec.codex.resolve(context):
+            decision = _apply_mapping(context, driver, spec.codex, store)
+        else:
+            decision = HookDecision.steer(_session_contract_message(context))
+    else:
+        decision = _apply_mapping(context, driver, spec.codex, store)
+
+    _record_hook_event(store, context, decision, driver.current_state)
     if event_name == "Stop" and not decision.allowed:
-        _record_stop_contract_failed(store, context, decision)
-    if decision.allowed:
-        return CodexHookResult(0, _json_stdout({"decision": decision.verdict, "messages": decision.messages}))
-    return CodexHookResult(2, "\n".join(decision.messages))
-
-
-def _decide(context: HookContext, store: JsonlEventLog) -> HookDecision:
-    if context.hook_event_name in {"PreToolUse", "PermissionRequest"}:
-        return _pre_action_decision(context)
-    if context.hook_event_name == "PostToolUse":
-        return _record_post_tool_evidence(context, store)
-    if context.hook_event_name == "UserPromptSubmit":
-        return _record_user_prompt(context, store)
-    if context.hook_event_name == "Stop":
-        return _stop_decision(context, store)
-    if context.hook_event_name in {"SessionStart", "PreCompact", "PostCompact"}:
-        return HookDecision.steer(_session_contract_message(context))
-    return HookDecision.allow()
+        _record_stop_contract_failed(store, context, decision, driver.current_state)
+    return _to_codex_result(decision)
 
 
 def _pre_action_decision(context: HookContext) -> HookDecision:
@@ -97,74 +86,86 @@ def _pre_action_decision(context: HookContext) -> HookDecision:
     return HookDecision.allow()
 
 
-def _record_post_tool_evidence(context: HookContext, store: JsonlEventLog) -> HookDecision:
-    command = str((context.tool_input or {}).get("command", ""))
-    output = _dict_value(context.payload.get("tool_output"))
-    exit_code = output.get("exit_code")
-    if context.tool_name == "Bash" and _is_verification_command(command) and exit_code in {0, "0", None}:
-        store.append(
-            new_event(
-                session_id=context.session_id or "default",
-                run_id=context.run_id or str(uuid4()),
-                state=context.state,
-                event_type="evidence_registered",
-                actor="codex",
-                payload={
-                    "kind": "verification",
-                    "command": command,
-                    "exit_code": exit_code,
-                    "stdout": str(output.get("stdout", ""))[:2000],
-                },
-            )
-        )
-    return HookDecision.allow()
-
-
-def _record_user_prompt(context: HookContext, store: JsonlEventLog) -> HookDecision:
-    prompt = str(context.payload.get("prompt") or "")
-    if "PASS" in prompt and "verdict" in prompt.lower():
-        store.append(
-            new_event(
-                session_id=context.session_id or "default",
-                run_id=context.run_id or str(uuid4()),
-                state=context.state,
-                event_type="verdict_recorded",
-                actor="evaluator",
-                payload={"status": "PASS", "details": prompt[:2000]},
-            )
-        )
-    return HookDecision.allow()
-
-
-def _stop_decision(context: HookContext, store: JsonlEventLog) -> HookDecision:
-    events = [event for event in store.read_all() if event.session_id == (context.session_id or "default")]
-    has_evidence = any(event.event_type == "evidence_registered" for event in events)
-    has_verification = any(
-        event.event_type == "evidence_registered" and event.payload.get("kind") == "verification" for event in events
+def _stop_decision(driver: EventSourcedLoopDriver) -> HookDecision:
+    if driver.is_terminal():
+        return HookDecision.allow()
+    next_events = sorted(
+        {transition.event for transition in driver.definition.transitions if transition.from_state == driver.current_state}
     )
-    has_evaluator_pass = any(
-        event.event_type == "verdict_recorded" and event.payload.get("status") == "PASS" for event in events
-    )
-    missing: list[str] = []
-    if not has_evidence:
-        missing.append("record evidence")
-    if not has_verification:
-        missing.append("run and record verification")
-    if not has_evaluator_pass:
-        missing.append("obtain fresh evaluator PASS")
-    if not missing:
+    steps = "record evidence; run and record verification; obtain fresh evaluator PASS"
+    if next_events:
+        detail = f"Next events from {driver.current_state}: {', '.join(next_events)}"
+    else:
+        detail = "no outgoing transition from current state"
+    return HookDecision.replan(f"Cannot stop yet. Required next steps: {steps}. {detail}")
+
+
+def _apply_mapping(
+    context: HookContext,
+    driver: EventSourcedLoopDriver,
+    mapping: CodexEventMap | None,
+    store: JsonlEventLog,
+) -> HookDecision:
+    if mapping is None:
+        return HookDecision.allow()
+    rules = mapping.resolve(context)
+    if not rules:
         return HookDecision.allow()
 
-    message = "Cannot stop yet. Required next steps: " + "; ".join(missing) + "."
-    return HookDecision.replan(message)
+    emitted = False
+    rejected_any = False
+    messages: list[str] = []
+    for rule in rules:
+        if rule.record is not None:
+            _record_side_event(store, context, rule.record, driver.current_state)
+        result = driver.apply_event(rule.emit, {}, explicit_guards=set(rule.guard_satisfied))
+        if result.applied:
+            emitted = True
+        elif result.rejected:
+            rejected_any = True
+            if result.reason:
+                messages.append(f"{rule.emit}: {result.reason}")
+
+    if emitted:
+        return HookDecision.allow()
+    if rejected_any:
+        return HookDecision.steer("; ".join(messages) or "no transition applied; continue working")
+    return HookDecision.allow()
 
 
-def _record_stop_contract_failed(store: JsonlEventLog, context: HookContext, decision: HookDecision) -> None:
+def _record_side_event(store: JsonlEventLog, context: HookContext, record: RecordSpec, state: str) -> None:
+    payload = dict(record.payload)
+    for key in record.include:
+        if key == "command":
+            payload["command"] = str((context.tool_input or {}).get("command", ""))
+        elif key == "exit_code":
+            output = context.payload.get("tool_output") or {}
+            payload["exit_code"] = output.get("exit_code") if isinstance(output, dict) else None
+        elif key == "stdout":
+            output = context.payload.get("tool_output") or {}
+            payload["stdout"] = str(output.get("stdout", "") if isinstance(output, dict) else "")[:2000]
+        elif key == "prompt":
+            payload["prompt"] = str(context.payload.get("prompt") or "")[:2000]
     store.append(
         new_event(
-            session_id=context.session_id or "default",
+            session_id=_session_id(context),
             run_id=context.run_id or str(uuid4()),
-            state=context.state,
+            state=state,
+            event_type=record.event_type,
+            actor=record.actor,
+            payload=payload,
+        )
+    )
+
+
+def _record_stop_contract_failed(
+    store: JsonlEventLog, context: HookContext, decision: HookDecision, state: str
+) -> None:
+    store.append(
+        new_event(
+            session_id=_session_id(context),
+            run_id=context.run_id or str(uuid4()),
+            state=state,
             event_type="stop_contract_failed",
             actor="hook-loop",
             payload={"message": "\n".join(decision.messages), "messages": decision.messages},
@@ -172,12 +173,14 @@ def _record_stop_contract_failed(store: JsonlEventLog, context: HookContext, dec
     )
 
 
-def _record_hook_event(store: JsonlEventLog, context: HookContext, decision: HookDecision) -> None:
+def _record_hook_event(
+    store: JsonlEventLog, context: HookContext, decision: HookDecision, state: str
+) -> None:
     store.append(
         new_event(
-            session_id=context.session_id or "default",
+            session_id=_session_id(context),
             run_id=context.run_id or str(uuid4()),
-            state=context.state,
+            state=state,
             event_type="hook_fired",
             actor="hook-loop",
             payload={
@@ -190,6 +193,16 @@ def _record_hook_event(store: JsonlEventLog, context: HookContext, decision: Hoo
             },
         )
     )
+
+
+def _to_codex_result(decision: HookDecision) -> CodexHookResult:
+    if decision.allowed:
+        return CodexHookResult(0, _json_stdout({"decision": decision.verdict, "messages": decision.messages}))
+    return CodexHookResult(2, "\n".join(decision.messages))
+
+
+def _session_id(context: HookContext) -> str:
+    return context.session_id or "default"
 
 
 def _normalized_event(event_name: str) -> str | None:
@@ -222,11 +235,6 @@ def _is_risky_shell_command(command: str) -> bool:
 
 def _references_protected_path(text: str) -> bool:
     return any(part in text for part in (".git/", ".git\\", "/.git", " .git"))
-
-
-def _is_verification_command(command: str) -> bool:
-    lowered = command.lower()
-    return any(marker in lowered for marker in ("pytest", "test", "git diff --check", "lint", "mypy"))
 
 
 def _session_contract_message(context: HookContext) -> str:

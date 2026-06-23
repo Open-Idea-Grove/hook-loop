@@ -7,7 +7,7 @@ The current implementation is the B-stage runtime described in:
 - [Design spec](docs/superpowers/specs/2026-05-16-hook-loop-agent-design.md)
 - [Runtime implementation plan](docs/superpowers/plans/2026-05-16-hook-loop-runtime-plan.md)
 
-It implements the B-stage runtime plus a minimal C-stage JSON DSL and CLI path. It does not implement generated platform adapters yet. The runtime is intentionally small and deterministic so loop behavior can be tested without a real LLM.
+It implements the B-stage runtime plus a minimal C-stage JSON DSL and CLI path, and a Codex hook adapter whose behavior is driven by a `codex.event_map` in the DSL. No Claude Code or pi adapter is included yet. The runtime is intentionally small and deterministic so loop behavior can be tested without a real LLM.
 
 ## What Is Implemented
 
@@ -42,7 +42,7 @@ uv run pytest -q
 Expected result:
 
 ```text
-46 passed
+89 passed
 ```
 
 You can also run focused checks:
@@ -112,11 +112,23 @@ uv run hook-loop codex install \
   --write
 ```
 
+To drive Codex with your own state machine, author a `hook-loop.json` (see
+[JSON DSL](#json-dsl)) and pass it via `--dsl`. The file is validated and embedded
+verbatim into the scaffold, so `--profile` becomes an informational label:
+
+```bash
+uv run hook-loop codex install \
+  --profile custom \
+  --target directory \
+  --destination /tmp/hook-loop-codex-preview \
+  --dsl ./my-loop.json \
+  --write
+```
+
 The generated scaffold contains:
 
 - `.codex/hooks.json`
-- `.codex/hooks/hook_loop_codex.py`
-- `hook-loop.json`
+- `hook-loop.json` (loop definition plus a `codex.event_map` that drives hook behavior)
 
 The hook command entrypoint is:
 
@@ -127,13 +139,20 @@ uv run hook-loop codex-hook \
   --event-log .hook-loop/events.jsonl
 ```
 
+The hook behavior is driven by the `loop` and `codex.event_map` sections of
+`hook-loop.json`, not by hardcoded profile logic: changing the states,
+transitions, or guards in the DSL changes how the Codex hooks respond.
+
 The first profile focuses on software delivery:
 
-- `PreToolUse` / `PermissionRequest` block risky shell and protected-path writes.
-- `PostToolUse` records verification evidence from commands such as tests and
-  `git diff --check`.
-- `Stop` requires evidence, verification, and a fresh evaluator `PASS` before
-  allowing the agent to finish.
+- `PreToolUse` / `PermissionRequest` block risky shell and protected-path writes
+  (an action-level guardrail that is independent of the state machine).
+- `PostToolUse` records verification evidence for commands such as tests and
+  `git diff --check`, and emits the `evidence_recorded` transition when matched.
+- `UserPromptSubmit` emits `feature_selected` (kickoff) and `review_requested` /
+  `evaluator_passed` (verdict) transitions based on `codex.event_map` rules.
+- `Stop` only allows the agent to finish once the loop has reached a terminal
+  state (e.g. `done`); otherwise it replans with the next required steps.
 
 ## Minimal Runtime Example
 
@@ -180,7 +199,10 @@ assert runtime.run_until_stop(RuntimeBudget(max_turns=3)) == "done"
 
 ## Current Boundaries
 
-- No Codex, Claude Code, or pi adapter is included yet.
-- No generated hook scaffold is included yet.
+- A Codex hook adapter and generated scaffold are included (see above), driven by
+  the `codex.event_map` in `hook-loop.json`. No Claude Code or pi adapter is
+  included yet.
 - Hook callbacks are in-process contracts, not a security boundary.
-- `FakeAgent` and `FakeEvaluator` exist to make loop semantics deterministic in tests.
+- `FakeAgent` and `FakeEvaluator` exist to make loop semantics deterministic in
+  tests; the Codex adapter uses an event-sourced driver instead, because in Codex
+  the agent is Codex itself rather than a fake.

@@ -147,4 +147,62 @@ def test_codex_install_directory_writes_scaffold(tmp_path, capsys):
     assert exit_code == 0
     assert "written:" in capsys.readouterr().out
     assert (tmp_path / ".codex" / "hooks.json").exists()
-    assert (tmp_path / ".codex" / "hooks" / "hook_loop_codex.py").exists()
+    assert (tmp_path / "hook-loop.json").exists()
+    assert not (tmp_path / ".codex" / "hooks" / "hook_loop_codex.py").exists()
+
+
+def test_codex_install_with_dsl_embeds_custom_loop(tmp_path, capsys):
+    custom = {
+        "loop": {
+            "id": "approval_loop",
+            "initial_state": "draft",
+            "states": ["draft", "reviewing", "accepted", "stopped"],
+            "terminal_states": ["accepted", "stopped"],
+            "stop_state": "stopped",
+            "events": ["submit", "approval_granted"],
+            "transitions": [
+                {"from": "draft", "event": "submit", "to": "reviewing"},
+                {"from": "reviewing", "event": "approval_granted", "to": "accepted"},
+            ],
+        },
+        "codex": {
+            "event_map": [
+                {"codex_event": "UserPromptSubmit", "when": {"prompt_match": "(?i)submit"}, "emit": "submit"}
+            ]
+        },
+    }
+    dsl_path = tmp_path / "custom.json"
+    dsl_path.write_text(json.dumps(custom), encoding="utf-8")
+    dest = tmp_path / "out"
+
+    exit_code = main([
+        "codex", "install",
+        "--profile", "custom",
+        "--target", "directory",
+        "--destination", str(dest),
+        "--dsl", str(dsl_path),
+        "--write",
+    ])
+
+    assert exit_code == 0
+    assert "written:" in capsys.readouterr().out
+    embedded = json.loads((dest / "hook-loop.json").read_text(encoding="utf-8"))
+    assert embedded["loop"]["id"] == "approval_loop"
+    assert (dest / ".codex" / "hooks.json").exists()
+
+
+def test_codex_install_with_invalid_dsl_reports_error(tmp_path, capsys):
+    broken = tmp_path / "broken.json"
+    broken.write_text("{", encoding="utf-8")
+
+    exit_code = main([
+        "codex", "install",
+        "--profile", "custom",
+        "--target", "directory",
+        "--destination", str(tmp_path / "out"),
+        "--dsl", str(broken),
+        "--write",
+    ])
+
+    assert exit_code == 1
+    assert "invalid:" in capsys.readouterr().err

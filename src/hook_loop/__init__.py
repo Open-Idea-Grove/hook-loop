@@ -1,7 +1,9 @@
 """Platform-neutral hook loop runtime."""
 
 from hook_loop.codex_adapter import CodexHookResult, handle_codex_hook, normalize_codex_hook_input
+from hook_loop.codex_mapping import CodexEventMap, MatchSpec, RecordSpec, ResolvedRule
 from hook_loop.codex_scaffold import CodexInstallResult, build_codex_scaffold, install_codex_scaffold
+from hook_loop.driver import ApplyResult, DefaultGuardEvaluator, EventSourcedLoopDriver, GuardEvaluator
 from hook_loop.dsl import DslError, LoopSpec, SimulationSpec, load_loop_spec
 from hook_loop.events import Event, new_event
 from hook_loop.evaluator import FakeEvaluator, Verdict, parse_verdict
@@ -15,9 +17,17 @@ __version__ = "0.1.0"
 
 __all__ = [
     "AgentStep",
+    "ApplyResult",
+    "CodexEventMap",
     "CodexHookResult",
     "CodexInstallResult",
+    "DefaultGuardEvaluator",
     "DslError",
+    "EventSourcedLoopDriver",
+    "GuardEvaluator",
+    "MatchSpec",
+    "RecordSpec",
+    "ResolvedRule",
     "Event",
     "FakeAgent",
     "FakeEvaluator",

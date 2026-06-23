@@ -10,3 +10,5 @@ def test_package_imports():
     assert hook_loop.load_loop_spec is not None
     assert hook_loop.handle_codex_hook is not None
     assert hook_loop.install_codex_scaffold is not None
+    assert hook_loop.EventSourcedLoopDriver is not None
+    assert hook_loop.DefaultGuardEvaluator is not None

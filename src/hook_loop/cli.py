@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     codex_install.add_argument("--profile", default="software_delivery")
     codex_install.add_argument("--target", choices=["project", "user", "directory"], default="directory")
     codex_install.add_argument("--destination", type=Path, default=Path("."))
+    codex_install.add_argument("--dsl", type=Path, default=None, help="path to a hook-loop JSON DSL file to embed instead of the profile preset")
     codex_install.add_argument("--dry-run", action="store_true")
     codex_install.add_argument("--write", action="store_true")
 
@@ -47,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "codex-hook":
         return _codex_hook(args.event, args.config, args.event_log)
     if args.command == "codex" and args.codex_command == "install":
-        return _codex_install(args.profile, args.target, args.destination, not args.write or args.dry_run)
+        return _codex_install(args.profile, args.target, args.destination, not args.write or args.dry_run, args.dsl)
     parser.error(f"unknown command: {args.command}")
     return 2
 
@@ -87,7 +88,7 @@ def _simulate(path: Path, event_log: Path, session_id: str) -> int:
 
 def _codex_hook(event_name: str, config_path: Path, event_log: Path) -> int:
     try:
-        load_loop_spec(config_path)
+        spec = load_loop_spec(config_path)
     except DslError as exc:
         print(f"invalid: {exc}", file=sys.stderr)
         return 1
@@ -96,7 +97,7 @@ def _codex_hook(event_name: str, config_path: Path, event_log: Path) -> int:
     except json.JSONDecodeError as exc:
         print(f"invalid hook input: {exc.msg}", file=sys.stderr)
         return 1
-    result = handle_codex_hook(event_name, raw_input, JsonlEventLog(event_log))
+    result = handle_codex_hook(event_name, raw_input, JsonlEventLog(event_log), spec)
     if result.stdout:
         print(result.stdout)
     if result.stderr:
@@ -104,10 +105,16 @@ def _codex_hook(event_name: str, config_path: Path, event_log: Path) -> int:
     return result.exit_code
 
 
-def _codex_install(profile: str, target: str, destination: Path, dry_run: bool) -> int:
+def _codex_install(profile: str, target: str, destination: Path, dry_run: bool, dsl_path: Path | None) -> int:
     try:
-        result = install_codex_scaffold(profile=profile, target=target, destination=destination, dry_run=dry_run)
-    except ValueError as exc:
+        result = install_codex_scaffold(
+            profile=profile,
+            target=target,
+            destination=destination,
+            dry_run=dry_run,
+            dsl_path=dsl_path,
+        )
+    except (ValueError, DslError) as exc:
         print(f"invalid: {exc}", file=sys.stderr)
         return 1
     label = "planned" if dry_run else "written"

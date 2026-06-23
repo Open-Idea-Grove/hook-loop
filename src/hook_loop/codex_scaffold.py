@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from hook_loop.dsl import DslError, load_loop_spec
+
 
 @dataclass(frozen=True)
 class CodexInstallResult:
@@ -11,8 +13,12 @@ class CodexInstallResult:
     written: list[Path]
 
 
-def build_codex_scaffold(profile: str, command_prefix: str = "hook-loop") -> dict[str, str]:
-    if profile != "software_delivery":
+def build_codex_scaffold(
+    profile: str,
+    command_prefix: str = "hook-loop",
+    dsl_path: Path | str | None = None,
+) -> dict[str, str]:
+    if dsl_path is None and profile != "software_delivery":
         raise ValueError(f"Unsupported Codex profile: {profile}")
     hook_command = _hook_command(command_prefix)
     hooks = {
@@ -27,10 +33,14 @@ def build_codex_scaffold(profile: str, command_prefix: str = "hook-loop") -> dic
             "Stop": [_hook_group(None, hook_command, "Stop")],
         }
     }
+    if dsl_path is not None:
+        load_loop_spec(dsl_path)  # validate; raises DslError on failure
+        loop_content = Path(dsl_path).read_text(encoding="utf-8")
+    else:
+        loop_content = json.dumps(_software_delivery_loop(), indent=2, sort_keys=True) + "\n"
     return {
         ".codex/hooks.json": json.dumps(hooks, indent=2, sort_keys=True) + "\n",
-        ".codex/hooks/hook_loop_codex.py": _hook_script(),
-        "hook-loop.json": json.dumps(_software_delivery_loop(), indent=2, sort_keys=True) + "\n",
+        "hook-loop.json": loop_content,
     }
 
 
@@ -39,11 +49,12 @@ def install_codex_scaffold(
     target: str,
     destination: Path,
     dry_run: bool = True,
+    dsl_path: Path | str | None = None,
 ) -> CodexInstallResult:
     if target not in {"project", "user", "directory"}:
         raise ValueError("target must be project, user, or directory")
     base = Path(destination)
-    files = build_codex_scaffold(profile)
+    files = build_codex_scaffold(profile, dsl_path=dsl_path)
     planned = [base / relative for relative in files]
     if dry_run:
         return CodexInstallResult(planned=planned, written=[])
@@ -80,18 +91,6 @@ def _hook_command(command_prefix: str) -> str:
     return f"{command_prefix} codex-hook"
 
 
-def _hook_script() -> str:
-    return """#!/usr/bin/env python3
-\"\"\"Placeholder hook-loop Codex command hook.
-
-The generated hooks.json calls `hook-loop codex-hook` directly. This file is
-included so project installs have a predictable place for future wrapper logic.
-\"\"\"
-
-raise SystemExit(0)
-"""
-
-
 def _software_delivery_loop() -> dict:
     return {
         "loop": {
@@ -121,5 +120,50 @@ def _software_delivery_loop() -> dict:
                 "evidence_ready": [{"event": "review_requested"}],
             },
             "verdicts": [{"status": "PASS", "details": "evidence checked"}],
+        },
+        "codex": {
+            "event_map": [
+                {
+                    "codex_event": "UserPromptSubmit",
+                    "when": {"prompt_not_match": "(?i)verdict"},
+                    "emit": "feature_selected",
+                    "comment": "first non-verdict prompt kicks off backlog->building",
+                },
+                {
+                    "codex_event": "PostToolUse",
+                    "when": {
+                        "tool_name": "Bash",
+                        "command_match": "pytest|test|git diff --check|lint|mypy",
+                        "exit_code": 0,
+                    },
+                    "record": {
+                        "event_type": "evidence_registered",
+                        "actor": "codex",
+                        "payload": {"kind": "verification"},
+                        "include": ["command", "exit_code", "stdout"],
+                    },
+                    "emit": "evidence_recorded",
+                    "comment": "building->evidence_ready",
+                },
+                {
+                    "codex_event": "UserPromptSubmit",
+                    "when": {"prompt_match": "(?i)verdict.*PASS|PASS.*verdict"},
+                    "record": {
+                        "event_type": "verdict_recorded",
+                        "actor": "evaluator",
+                        "payload": {"status": "PASS"},
+                        "include": ["prompt"],
+                    },
+                    "emit": "review_requested",
+                    "comment": "evidence_ready->evaluating",
+                },
+                {
+                    "codex_event": "UserPromptSubmit",
+                    "when": {"prompt_match": "(?i)verdict.*PASS|PASS.*verdict"},
+                    "emit": "evaluator_passed",
+                    "guard_satisfied": ["evidence_bound_to_criteria"],
+                    "comment": "evaluating->done (guard satisfied by recorded evidence)",
+                },
+            ]
         },
     }

@@ -6,6 +6,13 @@ from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
 
+from hook_loop.codex_mapping import (
+    SUPPORTED_CODEX_EVENTS,
+    CodexEventMap,
+    MatchSpec,
+    RecordSpec,
+    ResolvedRule,
+)
 from hook_loop.evaluator import Verdict
 from hook_loop.runtime import AgentStep, RuntimeBudget
 from hook_loop.schema import LoopDefinition, SchemaError
@@ -26,6 +33,7 @@ class SimulationSpec:
 class LoopSpec:
     definition: LoopDefinition
     simulation: SimulationSpec = field(default_factory=SimulationSpec)
+    codex: CodexEventMap | None = None
 
 
 def load_loop_spec(path: Path | str) -> LoopSpec:
@@ -42,8 +50,11 @@ def load_loop_spec(path: Path | str) -> LoopSpec:
     except SchemaError as exc:
         raise DslError(str(exc)) from exc
     simulation = _parse_simulation(raw.get("simulation", {}))
+    codex = _parse_codex(raw.get("codex"))
     _validate_loop_spec(definition, simulation)
-    return LoopSpec(definition=definition, simulation=simulation)
+    if codex is not None:
+        _validate_codex_mapping(definition, codex)
+    return LoopSpec(definition=definition, simulation=simulation, codex=codex)
 
 
 def _load_json(path: Path | str) -> Any:
@@ -146,3 +157,103 @@ def _validate_loop_spec(definition: LoopDefinition, simulation: SimulationSpec) 
                 definition.transition_for(state, step.event)
             except KeyError as exc:
                 raise DslError(f"No transition for simulation step: {state}/{step.event}") from exc
+
+
+def _parse_codex(raw: Any) -> CodexEventMap | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise DslError("codex must be an object")
+    event_map = raw.get("event_map", [])
+    if not isinstance(event_map, list):
+        raise DslError("codex.event_map must be a list")
+    rules: list[ResolvedRule] = []
+    for index, rule_raw in enumerate(event_map):
+        rules.append(_parse_codex_rule(rule_raw, index))
+    return CodexEventMap(rules=tuple(rules))
+
+
+def _parse_codex_rule(raw: Any, index: int) -> ResolvedRule:
+    if not isinstance(raw, dict):
+        raise DslError(f"codex.event_map[{index}] must be an object")
+    codex_event = raw.get("codex_event")
+    if not isinstance(codex_event, str) or not codex_event:
+        raise DslError(f"codex.event_map[{index}].codex_event must be a non-empty string")
+    if codex_event not in SUPPORTED_CODEX_EVENTS:
+        raise DslError(
+            f"codex.event_map[{index}].codex_event is not a supported Codex hook event: {codex_event}"
+        )
+    emit = raw.get("emit")
+    if not isinstance(emit, str) or not emit:
+        raise DslError(f"codex.event_map[{index}].emit must be a non-empty string")
+    when = _parse_match_spec(raw.get("when"), index)
+    record = _parse_record_spec(raw.get("record"), index)
+    guard_satisfied = _parse_guard_satisfied(raw.get("guard_satisfied"), index)
+    return ResolvedRule(
+        codex_event=codex_event,
+        when=when,
+        emit=emit,
+        record=record,
+        guard_satisfied=guard_satisfied,
+    )
+
+
+def _parse_match_spec(raw: Any, index: int) -> MatchSpec:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise DslError(f"codex.event_map[{index}].when must be an object")
+    tool_name = raw.get("tool_name")
+    if tool_name is not None and not (isinstance(tool_name, str) and tool_name):
+        raise DslError(f"codex.event_map[{index}].when.tool_name must be a non-empty string")
+    for regex_key in ("command_match", "prompt_match", "prompt_not_match"):
+        value = raw.get(regex_key)
+        if value is not None and not isinstance(value, str):
+            raise DslError(f"codex.event_map[{index}].when.{regex_key} must be a string")
+    exit_code = raw.get("exit_code")
+    if exit_code is not None and not isinstance(exit_code, (int, str)):
+        raise DslError(f"codex.event_map[{index}].when.exit_code must be an int or string")
+    return MatchSpec(
+        tool_name=tool_name,
+        command_match=raw.get("command_match"),
+        prompt_match=raw.get("prompt_match"),
+        prompt_not_match=raw.get("prompt_not_match"),
+        exit_code=exit_code,
+    )
+
+
+def _parse_record_spec(raw: Any, index: int) -> RecordSpec | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise DslError(f"codex.event_map[{index}].record must be an object")
+    event_type = raw.get("event_type")
+    if not isinstance(event_type, str) or not event_type:
+        raise DslError(f"codex.event_map[{index}].record.event_type must be a non-empty string")
+    actor = raw.get("actor")
+    if not isinstance(actor, str) or not actor:
+        raise DslError(f"codex.event_map[{index}].record.actor must be a non-empty string")
+    payload = raw.get("payload", {})
+    if not isinstance(payload, dict):
+        raise DslError(f"codex.event_map[{index}].record.payload must be an object")
+    include = raw.get("include", [])
+    if not isinstance(include, list) or not all(isinstance(item, str) and item for item in include):
+        raise DslError(f"codex.event_map[{index}].record.include must be a list of non-empty strings")
+    return RecordSpec(event_type=event_type, actor=actor, payload=dict(payload), include=tuple(include))
+
+
+def _parse_guard_satisfied(raw: Any, index: int) -> frozenset[str]:
+    if raw is None:
+        return frozenset()
+    if not isinstance(raw, list) or not all(isinstance(item, str) and item for item in raw):
+        raise DslError(f"codex.event_map[{index}].guard_satisfied must be a list of non-empty strings")
+    return frozenset(raw)
+
+
+def _validate_codex_mapping(definition: LoopDefinition, codex: CodexEventMap) -> None:
+    events_with_transitions = {transition.event for transition in definition.transitions}
+    for rule in codex.rules:
+        if rule.emit not in definition.events:
+            raise DslError(f"codex.event_map emit references unknown event: {rule.emit}")
+        if rule.emit not in events_with_transitions:
+            raise DslError(f"codex.event_map emit has no matching transition: {rule.emit}")
