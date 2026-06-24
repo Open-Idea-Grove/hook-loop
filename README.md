@@ -1,13 +1,174 @@
 # hook-loop
 
-`hook-loop` is a platform-neutral experiment for building autonomous agent outer loops from explicit state machines and hook points.
+`hook-loop` makes autonomous agent outer loops **explicit**: you write a state machine in JSON, and hook-loop wires it into platform hooks (Codex / opencode) so the agent is gated by the loop at every step — it cannot stop until the state machine reaches a terminal state.
 
-The current implementation is the B-stage runtime described in:
+## Basic Usage
 
-- [Design spec](docs/superpowers/specs/2026-05-16-hook-loop-agent-design.md)
-- [Runtime implementation plan](docs/superpowers/plans/2026-05-16-hook-loop-runtime-plan.md)
+### 1. Install
 
-It implements the B-stage runtime plus a minimal C-stage JSON DSL and CLI path, and a Codex hook adapter whose behavior is driven by a `codex.event_map` in the DSL. No Claude Code or pi adapter is included yet. The runtime is intentionally small and deterministic so loop behavior can be tested without a real LLM.
+```bash
+uv sync                          # install hook-loop into .venv
+```
+
+### 2. Write a DSL
+
+A hook-loop DSL is a single JSON file with three sections: `loop`, `simulation`, and `codex`.
+
+```jsonc
+// my-loop.json
+{
+  "loop": {
+    "id": "plan_execute",
+    "initial_state": "backlog",
+    "states": ["backlog", "planning", "executing", "verifying", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": ["kickoff", "plan_ready", "step_done", "all_steps_pass"],
+    "transitions": [
+      {"from": "backlog", "event": "kickoff", "to": "planning"},
+      {"from": "planning", "event": "plan_ready", "to": "executing"},
+      {"from": "executing", "event": "step_done", "to": "verifying"},
+      {"from": "verifying", "event": "all_steps_pass", "to": "done", "guards": ["plan_complete"]}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 6, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "backlog": [{"event": "kickoff"}],
+      "planning": [{"event": "plan_ready"}],
+      "executing": [{"event": "step_done"}],
+      "verifying": [{"event": "all_steps_pass"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "all steps verified"}]
+  },
+  "codex": {
+    "event_map": [
+      {"codex_event": "SessionStart", "emit": "kickoff"},
+      {"codex_event": "PostToolUse", "when": {"tool_name": "Write", "exit_code": 0}, "emit": "plan_ready"},
+      {"codex_event": "PostToolUse", "when": {"tool_name": "Bash", "command_match": "pytest|test", "exit_code": 0}, "emit": "step_done"},
+      {"codex_event": "UserPromptSubmit", "when": {"prompt_match": "(?i)all steps pass"}, "emit": "all_steps_pass", "guard_satisfied": ["plan_complete"]}
+    ]
+  }
+}
+```
+
+**DSL structure:**
+
+| Section | What it does |
+|---|---|
+| `loop` | The state machine: states, events, transitions, terminal states. Guards gate specific transitions. |
+| `simulation` | Deterministic test harness: fake agent steps + verdicts + budget. Lets you validate loop semantics without a real LLM. |
+| `codex.event_map` | Maps platform hook events to loop transitions. Each rule has a `codex_event`, optional `when` matchers, and an `emit` (loop event to fire). `record` side-effects append evidence before firing. `guard_satisfied` self-declares guards. |
+
+**`when` matchers** (all optional, logical AND):
+
+- `tool_name` — exact tool name (`"Bash"`, `"Write"`, `"Edit"`, ...).
+- `command_match` — regex searched against the Bash command string.
+- `prompt_match` / `prompt_not_match` — regex against user prompt text.
+- `exit_code` — tool exit code (as integer).
+
+### 3. Validate & simulate
+
+```bash
+uv run hook-loop validate my-loop.json        # → valid: plan_execute
+uv run hook-loop simulate my-loop.json         # → final_state: done
+```
+
+### 4. Use with Codex
+
+Generate the hook scaffold (Codex `hooks.json` + embedded DSL):
+
+```bash
+uv run hook-loop codex install \
+  --profile plan_execute \
+  --dsl my-loop.json \
+  --destination . \
+  --write
+```
+
+This creates `.codex/hooks.json` and `hook-loop.json` in your project. Codex 0.142+ reads hooks from `CODEX_HOME` (default `~/.codex/`). To keep hooks project-level without touching your global config, set `CODEX_HOME` to an in-project directory:
+
+```bash
+mkdir -p .codex-home
+cp .codex/hooks.json .codex-home/hooks.json
+ln -sf ~/.codex/auth.json .codex-home/auth.json   # read-only ref, no credentials copied
+cp ~/.codex/config.toml .codex-home/config.toml
+
+# Absolute path to hook-loop (hook subprocess may not have .venv on PATH):
+HOOK_BIN="$(pwd)/.venv/bin/hook-loop"
+sed -i "s|hook-loop |$HOOK_BIN |g" .codex-home/hooks.json
+```
+
+Then run codex with that home:
+
+```bash
+CODEX_HOME=$PWD/.codex-home codex exec \
+  --skip-git-repo-check \
+  --dangerously-bypass-approvals-and-sandbox \
+  --dangerously-bypass-hook-trust \
+  -C . \
+  "implement feature X and verify with pytest" \
+  --json
+```
+
+Check the loop state machine trace:
+
+```bash
+cat .hook-loop/events.jsonl
+```
+
+### 5. Use with opencode
+
+Generate the opencode plugin scaffold:
+
+```bash
+uv run hook-loop opencode install \
+  --profile plan_execute \
+  --dsl my-loop.json \
+  --destination . \
+  --write
+```
+
+This creates:
+- `.opencode/plugins/hook_loop.js` — a JS plugin that bridges opencode events to `hook-loop opencode-hook`
+- `hook-loop.json` — your embedded DSL
+
+opencode loads the plugin automatically. The plugin translates opencode events (`tool.execute.before` → `PreToolUse`, `tool.execute.after` → `PostToolUse`, `session.idle` → `Stop`, `message.updated` → `UserPromptSubmit`) and shells out to `hook-loop opencode-hook`.
+
+Run an opencode agent:
+
+```bash
+opencode run "implement feature X and verify with pytest"
+```
+
+Evidence and state transitions are logged to `.hook-loop/events.jsonl`.
+
+### How it works
+
+```
+                          hook-loop.json
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        │                      │                      │
+  codex.event_map        loop states          simulation
+        │                + transitions          (test only)
+        │                      │
+   ┌────┴────┐          EventSourcedLoopDriver
+   │ Codex   │              (state machine
+   │ hooks   │               recovery + gating)
+   └────┬────┘                  │        ┌─────┴─────┐
+        │                       │        │ Stop gate │
+        │              .hook-loop/events.jsonl └─────┘
+        │
+  .opencode/plugins/hook_loop.js
+```
+
+Every hook call recovers the current state from the event log, checks event_map rules, applies matching transitions, and records the result. `PreToolUse` guards risky commands. `Stop` blocks until a terminal state is reached.
+
+## Requirements
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) for Python environment and dependency management
 
 ## What Is Implemented
 
@@ -17,142 +178,11 @@ It implements the B-stage runtime plus a minimal C-stage JSON DSL and CLI path, 
 - In-process hook bus with allow/block/steer decisions.
 - Machine-readable evaluator verdict parsing.
 - Minimal fake-agent runtime simulation for pass, rework, stop, resume, and hook-block flows.
-- JSON DSL loading from `examples/software_delivery.json`.
 - `hook-loop validate` and `hook-loop simulate` CLI commands.
-- Codex-first hook adapter for the software delivery quality loop.
-- `hook-loop codex-hook` for Codex command hooks.
+- Codex hook adapter driven by `codex.event_map` in the DSL.
+- opencode hook adapter with scaffold generator (`hook-loop opencode install`).
 - `hook-loop codex install` scaffold generation with dry-run by default.
-
-## Requirements
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) for Python environment and dependency management
-
-The project uses a `src/` layout and pytest is declared in the uv dev dependency group.
-
-## Verify The Work
-
-From the repository root:
-
-```bash
-uv sync
-uv run pytest -q
-```
-
-Expected result:
-
-```text
-89 passed
-```
-
-You can also run focused checks:
-
-```bash
-uv run pytest tests/test_state_machine.py -q
-uv run pytest tests/test_event_store.py -q
-uv run pytest tests/test_hooks.py -q
-uv run pytest tests/test_evaluator.py -q
-uv run pytest tests/test_runtime_simulation.py -q
-uv run pytest tests/test_dsl.py -q
-uv run pytest tests/test_cli.py -q
-```
-
-## JSON DSL
-
-The canonical example is [examples/software_delivery.json](examples/software_delivery.json). It contains:
-
-- `loop`: states, terminal states, stop state, events, and transitions.
-- `simulation`: deterministic fake-agent steps, evaluator verdicts, and runtime budget.
-
-Validate it with:
-
-```bash
-uv run hook-loop validate examples/software_delivery.json
-```
-
-Expected output:
-
-```text
-valid: software_delivery
-```
-
-Run the deterministic simulation with:
-
-```bash
-uv run hook-loop simulate examples/software_delivery.json --event-log /private/tmp/hook-loop-example.jsonl
-```
-
-Expected output includes:
-
-```text
-final_state: done
-```
-
-## Codex Hook Adapter
-
-The Codex adapter is a first MVP for using `hook-loop` patterns inside Codex
-hooks without making the repository root load active hooks during development.
-
-Preview the generated software delivery hook scaffold:
-
-```bash
-uv run hook-loop codex install \
-  --profile software_delivery \
-  --target directory \
-  --destination /tmp/hook-loop-codex-preview
-```
-
-Write the scaffold only when you explicitly opt in:
-
-```bash
-uv run hook-loop codex install \
-  --profile software_delivery \
-  --target directory \
-  --destination /tmp/hook-loop-codex-preview \
-  --write
-```
-
-To drive Codex with your own state machine, author a `hook-loop.json` (see
-[JSON DSL](#json-dsl)) and pass it via `--dsl`. The file is validated and embedded
-verbatim into the scaffold, so `--profile` becomes an informational label:
-
-```bash
-uv run hook-loop codex install \
-  --profile custom \
-  --target directory \
-  --destination /tmp/hook-loop-codex-preview \
-  --dsl ./my-loop.json \
-  --write
-```
-
-The generated scaffold contains:
-
-- `.codex/hooks.json`
-- `hook-loop.json` (loop definition plus a `codex.event_map` that drives hook behavior)
-
-The hook command entrypoint is:
-
-```bash
-uv run hook-loop codex-hook \
-  --event PreToolUse \
-  --config hook-loop.json \
-  --event-log .hook-loop/events.jsonl
-```
-
-The hook behavior is driven by the `loop` and `codex.event_map` sections of
-`hook-loop.json`, not by hardcoded profile logic: changing the states,
-transitions, or guards in the DSL changes how the Codex hooks respond.
-
-The first profile focuses on software delivery:
-
-- `PreToolUse` / `PermissionRequest` block risky shell and protected-path writes
-  (an action-level guardrail that is independent of the state machine).
-- `PostToolUse` records verification evidence for commands such as tests and
-  `git diff --check`, and emits the `evidence_recorded` transition when matched.
-- `UserPromptSubmit` emits `feature_selected` (kickoff) and `review_requested` /
-  `evaluator_passed` (verdict) transitions based on `codex.event_map` rules.
-- `Stop` only allows the agent to finish once the loop has reached a terminal
-  state (e.g. `done`); otherwise it replans with the next required steps.
+- See `gallery/` for 8 example DSLs and verify them all with `uv run python experiments/check_gallery_behavior.py`.
 
 ## Minimal Runtime Example
 

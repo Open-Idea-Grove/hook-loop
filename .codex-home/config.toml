@@ -1,0 +1,35 @@
+model = "gpt-5.5"
+model_reasoning_effort = "high"
+[sandbox_workspace_write]
+exclude_slash_tmp = false
+exclude_tmpdir_env_var = false
+network_access = true
+writable_roots = ["/home/blizhan/.npm", "/home/blizhan/.cache/pip", "/home/blizhan/.cache/uv", "/home/blizhan/.cargo" ]
+
+[projects."/home/blizhan"]
+trust_level = "trusted"
+
+[projects."/home/blizhan/repo/snv/airflow25"]
+trust_level = "trusted"
+
+[projects."/home/blizhan/repo/snv/crudboy"]
+trust_level = "trusted"
+
+[projects."/home/blizhan/repo/github/hook-loop"]
+trust_level = "trusted"
+
+[projects."/home/blizhan/repo/snv/puma"]
+trust_level = "trusted"
+
+[projects."/home/blizhan/repo/snv/hydreigon"]
+trust_level = "trusted"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 4
+
+[plugins."superpowers@openai-curated"]
+enabled = true
+
+[mcp_servers.gitnexus]
+command = "gitnexus"
+args = ["mcp"]

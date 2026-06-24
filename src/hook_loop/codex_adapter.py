@@ -34,7 +34,7 @@ def normalize_codex_hook_input(event_name: str, raw_input: dict[str, Any]) -> Ho
             "tool_output": raw_input.get("tool_output") or raw_input.get("output"),
             "prompt": raw_input.get("prompt") or raw_input.get("user_prompt"),
         },
-        platform="codex",
+        platform=str(raw_input.get("platform") or "codex"),
         hook_event_name=event_name,
         session_id=str(raw_input.get("session_id") or raw_input.get("thread_id") or "default"),
         run_id=str(raw_input.get("run_id") or raw_input.get("turn_id") or uuid4()),
@@ -55,7 +55,9 @@ def handle_codex_hook(
     driver = EventSourcedLoopDriver(spec.definition, store, _session_id(context))
 
     if event_name in {"PreToolUse", "PermissionRequest"}:
-        decision = _pre_action_decision(context)
+        mapping_decision = _apply_mapping(context, driver, spec.codex, store)
+        action_decision = _pre_action_decision(context)
+        decision = action_decision if not action_decision.allowed else mapping_decision
     elif event_name == "Stop":
         decision = _stop_decision(driver)
     elif event_name in {"SessionStart", "PreCompact", "PostCompact"}:
@@ -112,12 +114,26 @@ def _apply_mapping(
     if not rules:
         return HookDecision.allow()
 
+    # State-aware filtering: only emit rules whose emit event has a transition
+    # from the current state. This prevents repeat-emit storms (e.g. message.updated
+    # firing kickoff 42 times after the loop already left backlog).
+    # Record side-effects always execute regardless of state — evidence can be
+    # recorded before the loop reaches the matching transition state.
+    # available_events is recomputed after each successful transition, because
+    # one rule's emit may move the state to where the next rule's emit becomes valid.
     emitted = False
     rejected_any = False
     messages: list[str] = []
     for rule in rules:
         if rule.record is not None:
             _record_side_event(store, context, rule.record, driver.current_state)
+        available_events = {
+            transition.event
+            for transition in driver.definition.transitions
+            if transition.from_state == driver.current_state
+        }
+        if rule.emit not in available_events:
+            continue
         result = driver.apply_event(rule.emit, {}, explicit_guards=set(rule.guard_satisfied))
         if result.applied:
             emitted = True
@@ -184,7 +200,7 @@ def _record_hook_event(
             event_type="hook_fired",
             actor="hook-loop",
             payload={
-                "platform": "codex",
+                "platform": context.platform or "codex",
                 "hook_event_name": context.hook_event_name,
                 "tool_name": context.tool_name,
                 "verdict": decision.verdict,
@@ -223,14 +239,27 @@ def _normalized_event(event_name: str) -> str | None:
 
 def _is_risky_shell_command(command: str) -> bool:
     stripped = command.strip()
-    risky_prefixes = ("rm ", "sudo rm", "git reset", "git push", "git commit", "drop ")
-    if stripped.startswith(risky_prefixes):
-        return True
     try:
         tokens = shlex.split(stripped)
     except ValueError:
         tokens = stripped.split()
-    return any(token in {".git", ".git/", ".git/config"} for token in tokens) or ".git" in stripped and "rm" in tokens
+
+    # rm is only risky when recursive (-r/-rf) or targeting non-temp paths
+    if tokens and tokens[0] == "rm":
+        flags = "".join(t for t in tokens[1:] if t.startswith("-") and not t.startswith("--"))
+        if "r" in flags:
+            return True  # rm -r, rm -rf, rm -fr are all risky
+        # check targets: /tmp/* and /var/tmp/* are safe; everything else is risky
+        targets = [t for t in tokens[1:] if not t.startswith("-")]
+        for target in targets:
+            if not (target.startswith("/tmp/") or target.startswith("/var/tmp/") or target == "/tmp"):
+                return True
+        return False  # rm -f /tmp/... is safe
+
+    risky_prefixes = ("sudo rm", "git reset", "git push", "git commit", "drop ")
+    if stripped.startswith(risky_prefixes):
+        return True
+    return any(token in {".git", ".git/", ".git/config"} for token in tokens) or (".git" in stripped and "rm" in tokens)
 
 
 def _references_protected_path(text: str) -> bool:

@@ -1,0 +1,72 @@
+{
+  "loop": {
+    "id": "safety_guardrail",
+    "initial_state": "idle",
+    "states": ["idle", "action_requested", "approved", "blocked", "executed", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "request_action",
+      "approve",
+      "block",
+      "action_executed",
+      "task_complete"
+    ],
+    "transitions": [
+      {"from": "idle", "event": "request_action", "to": "action_requested"},
+      {"from": "action_requested", "event": "approve", "to": "approved"},
+      {"from": "action_requested", "event": "block", "to": "blocked"},
+      {"from": "approved", "event": "action_executed", "to": "executed"},
+      {"from": "executed", "event": "request_action", "to": "action_requested"},
+      {"from": "executed", "event": "task_complete", "to": "done"},
+      {"from": "blocked", "event": "request_action", "to": "action_requested"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 8, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "idle": [{"event": "request_action"}],
+      "action_requested": [{"event": "approve"}],
+      "approved": [{"event": "action_executed"}],
+      "executed": [{"event": "task_complete"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "action approved and executed"}]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)request action|run|execute"},
+        "emit": "request_action",
+        "comment": "idle->action_requested; an action is proposed"
+      },
+      {
+        "codex_event": "PreToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "rm |git reset|git push --force|drop |shutdown"
+        },
+        "emit": "block",
+        "comment": "action_requested->blocked; pre-action guardrail blocks risky commands"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)approve|approved"},
+        "emit": "approve",
+        "comment": "action_requested->approved; human or policy approves"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Bash", "exit_code": 0},
+        "emit": "action_executed",
+        "comment": "approved->executed; action ran successfully"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)task complete|done|finished"},
+        "emit": "task_complete",
+        "comment": "executed->done; all actions complete"
+      }
+    ]
+  }
+}

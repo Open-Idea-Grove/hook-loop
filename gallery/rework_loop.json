@@ -1,0 +1,87 @@
+{
+  "loop": {
+    "id": "rework_loop",
+    "initial_state": "backlog",
+    "states": ["backlog", "building", "evaluating", "rework", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "build_started",
+      "build_done",
+      "evaluator_passed",
+      "evaluator_failed",
+      "rework_done"
+    ],
+    "transitions": [
+      {"from": "backlog", "event": "build_started", "to": "building"},
+      {"from": "building", "event": "build_done", "to": "evaluating"},
+      {
+        "from": "evaluating",
+        "event": "evaluator_passed",
+        "to": "done",
+        "guards": ["evidence_bound_to_criteria"]
+      },
+      {"from": "evaluating", "event": "evaluator_failed", "to": "rework"},
+      {"from": "rework", "event": "rework_done", "to": "building"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 10, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "backlog": [{"event": "build_started"}],
+      "building": [
+        {"event": "build_done"},
+        {"event": "build_done"}
+      ],
+      "rework": [{"event": "rework_done"}]
+    },
+    "verdicts": [
+      {"status": "NEEDS_WORK", "details": "build does not meet criteria"},
+      {"status": "PASS", "details": "rework satisfied all criteria"}
+    ]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "SessionStart",
+        "emit": "build_started",
+        "comment": "session start begins the build (backlog->building)"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Bash", "exit_code": 0},
+        "emit": "build_done",
+        "comment": "building->evaluating after any successful bash command completes"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)verdict.*PASS|PASS.*verdict"},
+        "emit": "evaluator_passed",
+        "guard_satisfied": ["evidence_bound_to_criteria"],
+        "comment": "evaluating->done; evaluator verdict PASS closes the loop"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)verdict.*NEEDS_WORK|NEEDS_WORK|rework"},
+        "emit": "evaluator_failed",
+        "comment": "evaluating->rework; evaluator verdict NEEDS_WORK sends back to rework"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "pytest|test|lint|mypy|git diff --check",
+          "exit_code": 0
+        },
+        "record": {
+          "event_type": "evidence_registered",
+          "actor": "codex",
+          "payload": {"kind": "verification"},
+          "include": ["command", "exit_code", "stdout"]
+        },
+        "emit": "rework_done",
+        "comment": "rework->building after rework tests pass"
+      }
+    ]
+  }
+}

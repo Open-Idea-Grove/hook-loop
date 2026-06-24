@@ -1,0 +1,108 @@
+{
+  "loop": {
+    "id": "plan_execute",
+    "initial_state": "backlog",
+    "states": ["backlog", "planning", "executing", "verifying", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "kickoff",
+      "plan_ready",
+      "step_done",
+      "step_failed",
+      "all_steps_pass",
+      "replan_requested"
+    ],
+    "transitions": [
+      {"from": "backlog", "event": "kickoff", "to": "planning"},
+      {"from": "planning", "event": "plan_ready", "to": "executing"},
+      {"from": "executing", "event": "step_done", "to": "verifying"},
+      {"from": "verifying", "event": "step_failed", "to": "executing"},
+      {
+        "from": "verifying",
+        "event": "all_steps_pass",
+        "to": "done",
+        "guards": ["plan_complete"]
+      },
+      {"from": "executing", "event": "replan_requested", "to": "planning"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 6, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "backlog": [{"event": "kickoff"}],
+      "planning": [{"event": "plan_ready"}],
+      "executing": [{"event": "step_done"}],
+      "verifying": [{"event": "all_steps_pass"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "all steps verified"}]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "SessionStart",
+        "emit": "kickoff",
+        "comment": "session start begins the plan-execute loop when the platform exposes it"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_not_match": "(?i)verdict|plan ready|step|replan|all steps"},
+        "emit": "kickoff",
+        "comment": "first generic user prompt starts the plan-execute loop (backlog->planning)"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)plan ready|plan_complete"},
+        "emit": "plan_ready",
+        "comment": "planning->executing once a plan artifact is produced"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Write", "exit_code": 0},
+        "emit": "plan_ready",
+        "comment": "planning->executing fallback: first Write call means agent started implementing (#20 fix for opencode)"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Edit", "exit_code": 0},
+        "emit": "plan_ready",
+        "comment": "planning->executing fallback: Edit also means implementation started"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "pytest|test|lint|mypy|git diff --check",
+          "exit_code": 0
+        },
+        "record": {
+          "event_type": "evidence_registered",
+          "actor": "codex",
+          "payload": {"kind": "verification"},
+          "include": ["command", "exit_code", "stdout"]
+        },
+        "emit": "step_done",
+        "comment": "executing->verifying after a verification command passes"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)step failed|NEEDS_WORK|rework"},
+        "emit": "step_failed",
+        "comment": "verifying->executing rework loop"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)all steps pass|plan complete"},
+        "emit": "all_steps_pass",
+        "guard_satisfied": ["plan_complete"],
+        "comment": "verifying->done; guard plan_complete is self-declared because no built-in evaluator counts completed steps (see ISSUE.md)"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)replan"},
+        "emit": "replan_requested",
+        "comment": "executing->planning when the current plan is invalidated"
+      }
+    ]
+  }
+}

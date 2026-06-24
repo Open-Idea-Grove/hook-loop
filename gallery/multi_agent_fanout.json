@@ -1,0 +1,110 @@
+{
+  "loop": {
+    "id": "multi_agent_fanout",
+    "initial_state": "backlog",
+    "states": ["backlog", "dispatching", "working", "collecting", "evaluating", "rework", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "kickoff",
+      "tasks_dispatched",
+      "worker_done",
+      "all_workers_done",
+      "review_requested",
+      "evaluator_passed",
+      "evaluator_failed",
+      "rework_done"
+    ],
+    "transitions": [
+      {"from": "backlog", "event": "kickoff", "to": "dispatching"},
+      {"from": "dispatching", "event": "tasks_dispatched", "to": "working"},
+      {"from": "working", "event": "worker_done", "to": "working"},
+      {"from": "working", "event": "all_workers_done", "to": "collecting"},
+      {"from": "collecting", "event": "review_requested", "to": "evaluating"},
+      {
+        "from": "evaluating",
+        "event": "evaluator_passed",
+        "to": "done",
+        "guards": ["evidence_bound_to_criteria"]
+      },
+      {"from": "evaluating", "event": "evaluator_failed", "to": "rework"},
+      {"from": "rework", "event": "rework_done", "to": "dispatching"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 12, "max_no_progress_turns": 3},
+    "agent_steps": {
+      "backlog": [{"event": "kickoff"}],
+      "dispatching": [{"event": "tasks_dispatched"}],
+      "working": [
+        {"event": "worker_done", "payload": {"worker_id": "w1"}},
+        {"event": "worker_done", "payload": {"worker_id": "w2"}},
+        {"event": "all_workers_done"}
+      ],
+      "collecting": [{"event": "review_requested"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "all worker outputs verified"}]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "SessionStart",
+        "emit": "kickoff",
+        "comment": "session start begins fanout (backlog->dispatching)"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)tasks dispatched|dispatched|distributed"},
+        "emit": "tasks_dispatched",
+        "comment": "dispatching->working once tasks are dispatched"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Bash", "exit_code": 0},
+        "emit": "worker_done",
+        "comment": "working->working loop: each successful tool call is a worker completion"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)all workers done|all tasks complete|all done"},
+        "emit": "all_workers_done",
+        "comment": "working->collecting when all workers report done"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)review requested|ready for review"},
+        "emit": "review_requested",
+        "comment": "collecting->evaluating; hand off to evaluator"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)verdict.*PASS|PASS.*verdict|all verified"},
+        "emit": "evaluator_passed",
+        "guard_satisfied": ["evidence_bound_to_criteria"],
+        "comment": "evaluating->done; evaluator verdict PASS"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)verdict.*NEEDS_WORK|NEEDS_WORK|rework"},
+        "emit": "evaluator_failed",
+        "comment": "evaluating->rework; evaluator verdict NEEDS_WORK"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "pytest|test|lint|mypy|git diff --check",
+          "exit_code": 0
+        },
+        "record": {
+          "event_type": "evidence_registered",
+          "actor": "codex",
+          "payload": {"kind": "verification"},
+          "include": ["command", "exit_code", "stdout"]
+        },
+        "emit": "rework_done",
+        "comment": "rework->dispatching after rework tests pass"
+      }
+    ]
+  }
+}

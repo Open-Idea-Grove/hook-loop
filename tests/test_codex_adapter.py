@@ -156,6 +156,54 @@ def test_permission_request_blocks_apply_patch_to_git_directory(tmp_path):
     assert "protected path" in result.stdout
 
 
+def test_pre_tool_use_event_map_can_record_block_transition_before_blocking(tmp_path):
+    raw = {
+        "loop": {
+            "id": "safety_guardrail",
+            "initial_state": "idle",
+            "states": ["idle", "action_requested", "blocked", "stopped"],
+            "terminal_states": ["blocked", "stopped"],
+            "stop_state": "stopped",
+            "events": ["request_action", "block"],
+            "transitions": [
+                {"from": "idle", "event": "request_action", "to": "action_requested"},
+                {"from": "action_requested", "event": "block", "to": "blocked"},
+            ],
+        },
+        "codex": {
+            "event_map": [
+                {"codex_event": "UserPromptSubmit", "when": {"prompt_match": "run"}, "emit": "request_action"},
+                {
+                    "codex_event": "PreToolUse",
+                    "when": {"tool_name": "Bash", "command_match": "rm "},
+                    "emit": "block",
+                },
+            ]
+        },
+    }
+    path = tmp_path / "loop.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    spec = load_loop_spec(path)
+    log = JsonlEventLog(tmp_path / "events.jsonl")
+    session = {"session_id": "session-1", "cwd": "/repo"}
+
+    handle_codex_hook("UserPromptSubmit", {**session, "prompt": "run migration"}, log, spec)
+    result = handle_codex_hook(
+        "PreToolUse",
+        {**session, "tool_name": "Bash", "tool_input": {"command": "rm -rf .git"}},
+        log,
+        spec,
+    )
+
+    assert result.exit_code == 2
+    assert "risky action" in result.stdout
+    transitions = [e for e in log.read_all() if e.event_type == "state_transitioned"]
+    assert [(t.payload["from"], t.payload["event"], t.payload["to"]) for t in transitions] == [
+        ("idle", "request_action", "action_requested"),
+        ("action_requested", "block", "blocked"),
+    ]
+
+
 def test_post_tool_use_records_evidence_for_test_command(tmp_path):
     log = JsonlEventLog(tmp_path / "events.jsonl")
     spec = load_spec(tmp_path)

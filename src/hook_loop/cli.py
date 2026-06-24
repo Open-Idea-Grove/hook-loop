@@ -9,6 +9,7 @@ from hook_loop.codex_adapter import handle_codex_hook
 from hook_loop.codex_scaffold import install_codex_scaffold
 from hook_loop.dsl import DslError, load_loop_spec
 from hook_loop.evaluator import FakeEvaluator
+from hook_loop.opencode_adapter import handle_opencode_hook
 from hook_loop.runtime import FakeAgent, LoopRuntime
 from hook_loop.store import JsonlEventLog
 
@@ -30,6 +31,11 @@ def main(argv: list[str] | None = None) -> int:
     codex_hook.add_argument("--config", type=Path, required=True)
     codex_hook.add_argument("--event-log", type=Path, required=True)
 
+    opencode_hook = subparsers.add_parser("opencode-hook", help="run an opencode lifecycle hook adapter")
+    opencode_hook.add_argument("--event", required=True)
+    opencode_hook.add_argument("--config", type=Path, required=True)
+    opencode_hook.add_argument("--event-log", type=Path, required=True)
+
     codex = subparsers.add_parser("codex", help="Codex hook-loop helpers")
     codex_subparsers = codex.add_subparsers(dest="codex_command", required=True)
     codex_install = codex_subparsers.add_parser("install", help="install Codex hook scaffold")
@@ -40,6 +46,15 @@ def main(argv: list[str] | None = None) -> int:
     codex_install.add_argument("--dry-run", action="store_true")
     codex_install.add_argument("--write", action="store_true")
 
+    opencode = subparsers.add_parser("opencode", help="opencode hook-loop helpers")
+    opencode_subparsers = opencode.add_subparsers(dest="opencode_command", required=True)
+    opencode_install = opencode_subparsers.add_parser("install", help="install opencode hook scaffold")
+    opencode_install.add_argument("--profile", default="software_delivery")
+    opencode_install.add_argument("--destination", type=Path, default=Path("."))
+    opencode_install.add_argument("--dsl", type=Path, default=None, help="path to a hook-loop JSON DSL file to embed instead of the profile preset")
+    opencode_install.add_argument("--dry-run", action="store_true")
+    opencode_install.add_argument("--write", action="store_true")
+
     args = parser.parse_args(argv)
     if args.command == "validate":
         return _validate(args.path)
@@ -47,8 +62,12 @@ def main(argv: list[str] | None = None) -> int:
         return _simulate(args.path, args.event_log, args.session_id)
     if args.command == "codex-hook":
         return _codex_hook(args.event, args.config, args.event_log)
+    if args.command == "opencode-hook":
+        return _opencode_hook(args.event, args.config, args.event_log)
     if args.command == "codex" and args.codex_command == "install":
         return _codex_install(args.profile, args.target, args.destination, not args.write or args.dry_run, args.dsl)
+    if args.command == "opencode" and args.opencode_command == "install":
+        return _opencode_install(args.profile, args.destination, not args.write or args.dry_run, args.dsl)
     parser.error(f"unknown command: {args.command}")
     return 2
 
@@ -105,11 +124,51 @@ def _codex_hook(event_name: str, config_path: Path, event_log: Path) -> int:
     return result.exit_code
 
 
+def _opencode_hook(event_name: str, config_path: Path, event_log: Path) -> int:
+    try:
+        spec = load_loop_spec(config_path)
+    except DslError as exc:
+        print(f"invalid: {exc}", file=sys.stderr)
+        return 1
+    try:
+        raw_input = json.loads(sys.stdin.read() or "{}")
+    except json.JSONDecodeError as exc:
+        print(f"invalid hook input: {exc.msg}", file=sys.stderr)
+        return 1
+    result = handle_opencode_hook(event_name, raw_input, JsonlEventLog(event_log), spec)
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+    return result.exit_code
+
+
 def _codex_install(profile: str, target: str, destination: Path, dry_run: bool, dsl_path: Path | None) -> int:
     try:
         result = install_codex_scaffold(
             profile=profile,
             target=target,
+            destination=destination,
+            dry_run=dry_run,
+            dsl_path=dsl_path,
+        )
+    except (ValueError, DslError) as exc:
+        print(f"invalid: {exc}", file=sys.stderr)
+        return 1
+    label = "planned" if dry_run else "written"
+    paths = result.planned if dry_run else result.written
+    print(f"{label}:")
+    for path in paths:
+        print(path)
+    return 0
+
+
+def _opencode_install(profile: str, destination: Path, dry_run: bool, dsl_path: Path | None) -> int:
+    from hook_loop.opencode_scaffold import install_opencode_scaffold
+
+    try:
+        result = install_opencode_scaffold(
+            profile=profile,
             destination=destination,
             dry_run=dry_run,
             dsl_path=dsl_path,
