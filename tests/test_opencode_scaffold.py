@@ -41,6 +41,8 @@ def test_build_opencode_scaffold_generates_plugin_and_dsl(tmp_path):
     assert "metadata?.exit" in plugin
     assert "sessionIdFrom(input, output)" in plugin
     assert "session.created" in plugin  # event handler still handles session.created
+    assert "blocked by hook-loop stop policy" not in plugin
+    assert 'await callHookLoop("session.idle", payload);' in plugin
 
 
 def test_build_opencode_scaffold_with_dsl_path_embeds_custom_loop(tmp_path):
