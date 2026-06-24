@@ -108,8 +108,31 @@ function enforceHookDecision(result, fallbackMessage) {{
   }}
 }}
 
+function sessionIdFrom(...sources) {{
+  for (const source of sources) {{
+    if (!source) continue;
+    if (source.session_id) return String(source.session_id);
+    if (source.sessionID) return String(source.sessionID);
+    if (source.session?.id) return String(source.session.id);
+    if (source.message?.sessionID) return String(source.message.sessionID);
+    if (source.info?.sessionID) return String(source.info.sessionID);
+    if (source.properties?.sessionID) return String(source.properties.sessionID);
+    if (source.properties?.info?.sessionID) return String(source.properties.info.sessionID);
+  }}
+  return "opencode-session";
+}}
+
+function outputExitCode(output) {{
+  return output?.exitCode
+    ?? output?.exit_code
+    ?? output?.metadata?.exit
+    ?? output?.metadata?.exit_code
+    ?? output?.metadata?.status
+    ?? output?.status
+    ?? null;
+}}
+
 export const HookLoopPlugin = async ({{ project, client, directory, worktree }}) => {{
-  const sessionId = project?.id ?? "opencode-session";
   const cwd = directory ?? "";
 
   // session.created is handled by the event handler; do not block init (#14 fix).
@@ -117,7 +140,7 @@ export const HookLoopPlugin = async ({{ project, client, directory, worktree }})
   return {{
     "tool.execute.before": async (input, output) => {{
       const payload = {{
-        session_id: sessionId,
+        session_id: sessionIdFrom(input, output),
         cwd,
         tool: input?.tool ?? input?.name ?? "unknown",
         input: output?.args ?? {{}},
@@ -128,12 +151,12 @@ export const HookLoopPlugin = async ({{ project, client, directory, worktree }})
     }},
     "tool.execute.after": async (input, output) => {{
       const payload = {{
-        session_id: sessionId,
+        session_id: sessionIdFrom(input, output),
         cwd,
         tool: input?.tool ?? input?.name ?? "unknown",
         input: output?.args ?? input?.args ?? {{}},
         output: {{
-          exit_code: output?.exitCode ?? output?.exit_code ?? 0,
+          exit_code: outputExitCode(output),
           stdout: output?.stdout ?? output?.output ?? "",
         }},
         workspace: worktree,
@@ -143,13 +166,13 @@ export const HookLoopPlugin = async ({{ project, client, directory, worktree }})
     event: async ({{ event }}) => {{
       const eventType = event?.type ?? "";
       if (eventType === "session.idle" || (eventType === "session.status" && event?.properties?.status === "idle")) {{
-        const payload = {{ session_id: sessionId, cwd, workspace: worktree }};
+        const payload = {{ session_id: sessionIdFrom(event), cwd, workspace: worktree }};
         const result = await callHookLoop("session.idle", payload);
         enforceHookDecision(result, "blocked by hook-loop stop policy");
         return;
       }}
       if (eventType === "session.created" || eventType === "session.init") {{
-        const payload = {{ session_id: sessionId, cwd, workspace: worktree }};
+        const payload = {{ session_id: sessionIdFrom(event), cwd, workspace: worktree }};
         await callHookLoop("session.created", payload);
         return;
       }}
@@ -159,7 +182,7 @@ export const HookLoopPlugin = async ({{ project, client, directory, worktree }})
         const info = event?.properties?.info ?? {{}};
         const role = info.role ?? "";
         if (role === "user" || role === "assistant") {{
-          const payload = {{ session_id: sessionId, cwd, text: "", workspace: worktree }};
+          const payload = {{ session_id: sessionIdFrom(event), cwd, text: "", workspace: worktree }};
           await callHookLoop("message.updated", payload);
         }}
       }}
@@ -169,7 +192,7 @@ export const HookLoopPlugin = async ({{ project, client, directory, worktree }})
         const text = part.text ?? part.content ?? "";
         const role = part.role ?? event?.properties?.info?.role ?? "";
         if (text && (role === "user" || role === "assistant")) {{
-          const payload = {{ session_id: sessionId, cwd, text, workspace: worktree }};
+          const payload = {{ session_id: sessionIdFrom(event), cwd, text, workspace: worktree }};
           await callHookLoop("message.updated", payload);
         }}
       }}

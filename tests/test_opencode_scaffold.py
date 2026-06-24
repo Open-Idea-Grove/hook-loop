@@ -38,6 +38,8 @@ def test_build_opencode_scaffold_generates_plugin_and_dsl(tmp_path):
     assert "opencode-hook" in plugin
     assert "Bun.spawn" in plugin
     assert "enforceHookDecision" in plugin
+    assert "metadata?.exit" in plugin
+    assert "sessionIdFrom(input, output)" in plugin
     assert "session.created" in plugin  # event handler still handles session.created
 
 

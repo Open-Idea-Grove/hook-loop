@@ -104,11 +104,19 @@ def normalize_opencode_tool_name(tool_name: str) -> str:
 
 
 def _session_id(raw_input: dict[str, Any]) -> str | None:
-    if raw_input.get("session_id") is not None:
-        return str(raw_input["session_id"])
+    for key in ("session_id", "sessionID"):
+        if raw_input.get(key) is not None:
+            return str(raw_input[key])
     session = raw_input.get("session")
     if isinstance(session, dict) and session.get("id") is not None:
         return str(session["id"])
+    properties = raw_input.get("properties")
+    if isinstance(properties, dict):
+        if properties.get("sessionID") is not None:
+            return str(properties["sessionID"])
+        info = properties.get("info")
+        if isinstance(info, dict) and info.get("sessionID") is not None:
+            return str(info["sessionID"])
     return None
 
 
@@ -149,11 +157,27 @@ def _tool_input(raw_input: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _tool_output(raw_input: dict[str, Any]) -> Any:
+    output = None
     if "tool_output" in raw_input:
-        return raw_input["tool_output"]
-    if "output" in raw_input:
-        return raw_input["output"]
-    return None
+        output = raw_input["tool_output"]
+    elif "output" in raw_input:
+        output = raw_input["output"]
+    if not isinstance(output, dict):
+        return output
+
+    normalized = dict(output)
+    if normalized.get("exit_code") is None:
+        for key in ("exitCode", "exit_code", "status"):
+            if output.get(key) is not None:
+                normalized["exit_code"] = output[key]
+                break
+    metadata = output.get("metadata")
+    if normalized.get("exit_code") is None and isinstance(metadata, dict):
+        for key in ("exit", "exit_code", "status"):
+            if metadata.get(key) is not None:
+                normalized["exit_code"] = metadata[key]
+                break
+    return normalized
 
 
 def _prompt(raw_input: dict[str, Any]) -> str | None:

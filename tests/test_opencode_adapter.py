@@ -106,6 +106,41 @@ def test_translates_opencode_tool_after_event_to_codex_post_tool_use():
     assert context.raw_input["opencode_event_name"] == "tool.execute.after"
 
 
+def test_translates_opencode_bash_metadata_exit_code():
+    context = normalize_opencode_hook_input(
+        "tool.execute.after",
+        {
+            "sessionID": "session-1",
+            "cwd": "/repo",
+            "tool": "bash",
+            "input": {"command": "uv run pytest -q"},
+            "output": {"metadata": {"exit": 1}, "stdout": "failed"},
+        },
+    )
+
+    assert context.session_id == "session-1"
+    assert context.payload["tool_output"]["exit_code"] == 1
+
+
+def test_failed_opencode_bash_metadata_exit_does_not_emit_success_transition(tmp_path):
+    log = JsonlEventLog(tmp_path / "events.jsonl")
+    result = handle_opencode_hook(
+        "tool.execute.after",
+        {
+            "sessionID": "session-1",
+            "cwd": "/repo",
+            "tool": "bash",
+            "input": {"command": "uv run pytest -q"},
+            "output": {"metadata": {"exit": 1}, "stdout": "failed"},
+        },
+        log,
+        load_spec(tmp_path),
+    )
+
+    assert result.exit_code == 0
+    assert [event.event_type for event in log.read_all()] == ["hook_fired"]
+
+
 def test_normalizes_lowercase_opencode_tool_names():
     cases = {
         "bash": "Bash",
