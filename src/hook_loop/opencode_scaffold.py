@@ -167,8 +167,7 @@ export const HookLoopPlugin = async ({{ project, client, directory, worktree }})
       const eventType = event?.type ?? "";
       if (eventType === "session.idle" || (eventType === "session.status" && event?.properties?.status === "idle")) {{
         const payload = {{ session_id: sessionIdFrom(event), cwd, workspace: worktree }};
-        const result = await callHookLoop("session.idle", payload);
-        enforceHookDecision(result, "blocked by hook-loop stop policy");
+        await callHookLoop("session.idle", payload);
         return;
       }}
       if (eventType === "session.created" || eventType === "session.init") {{

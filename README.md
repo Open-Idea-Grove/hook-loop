@@ -10,62 +10,9 @@
 uv sync                          # install hook-loop into .venv
 ```
 
-### 2. Write a DSL
+### 2. Choose or write a DSL
 
-A hook-loop DSL is a single JSON file with three sections: `loop`, `simulation`, and `codex`.
-
-```jsonc
-// my-loop.json
-{
-  "loop": {
-    "id": "plan_execute",
-    "initial_state": "backlog",
-    "states": ["backlog", "planning", "executing", "verifying", "done", "stopped"],
-    "terminal_states": ["done", "stopped"],
-    "stop_state": "stopped",
-    "events": ["kickoff", "plan_ready", "step_done", "all_steps_pass"],
-    "transitions": [
-      {"from": "backlog", "event": "kickoff", "to": "planning"},
-      {"from": "planning", "event": "plan_ready", "to": "executing"},
-      {"from": "executing", "event": "step_done", "to": "verifying"},
-      {"from": "verifying", "event": "all_steps_pass", "to": "done", "guards": ["plan_complete"]}
-    ]
-  },
-  "simulation": {
-    "budget": {"max_turns": 6, "max_no_progress_turns": 2},
-    "agent_steps": {
-      "backlog": [{"event": "kickoff"}],
-      "planning": [{"event": "plan_ready"}],
-      "executing": [{"event": "step_done"}],
-      "verifying": [{"event": "all_steps_pass"}]
-    },
-    "verdicts": [{"status": "PASS", "details": "all steps verified"}]
-  },
-  "codex": {
-    "event_map": [
-      {"codex_event": "SessionStart", "emit": "kickoff"},
-      {"codex_event": "PostToolUse", "when": {"tool_name": "Write", "exit_code": 0}, "emit": "plan_ready"},
-      {"codex_event": "PostToolUse", "when": {"tool_name": "Bash", "command_match": "pytest|test", "exit_code": 0}, "emit": "step_done"},
-      {"codex_event": "UserPromptSubmit", "when": {"prompt_match": "(?i)all steps pass"}, "emit": "all_steps_pass", "guard_satisfied": ["plan_complete"]}
-    ]
-  }
-}
-```
-
-**DSL structure:**
-
-| Section | What it does |
-|---|---|
-| `loop` | The state machine: states, events, transitions, terminal states. Guards gate specific transitions. |
-| `simulation` | Deterministic test harness: fake agent steps + verdicts + budget. Lets you validate loop semantics without a real LLM. |
-| `codex.event_map` | Maps platform hook events to loop transitions. Each rule has a `codex_event`, optional `when` matchers, and an `emit` (loop event to fire). `record` side-effects append evidence before firing. `guard_satisfied` self-declares guards. |
-
-**`when` matchers** (all optional, logical AND):
-
-- `tool_name` — exact tool name (`"Bash"`, `"Write"`, `"Edit"`, ...).
-- `command_match` — regex searched against the Bash command string.
-- `prompt_match` / `prompt_not_match` — regex against user prompt text.
-- `exit_code` — tool exit code (as integer).
+A hook-loop DSL is a JSON state machine with `loop`, `simulation`, and `codex.event_map` sections. Start from the examples in [`gallery/`](gallery/), or read [`gallery/README.md`](gallery/README.md) for the DSL writing guide and state-machine diagrams.
 
 ### 3. Validate & simulate
 
@@ -74,7 +21,9 @@ uv run hook-loop validate my-loop.json        # → valid: plan_execute
 uv run hook-loop simulate my-loop.json         # → final_state: done
 ```
 
-### 4. Use with Codex
+### 4. Use in a coding agent
+
+#### Codex
 
 Generate the hook scaffold (Codex `hooks.json` + embedded DSL):
 
@@ -117,7 +66,7 @@ Check the loop state machine trace:
 cat .hook-loop/events.jsonl
 ```
 
-### 5. Use with opencode
+#### opencode
 
 Generate the opencode plugin scaffold:
 
@@ -145,25 +94,32 @@ Evidence and state transitions are logged to `.hook-loop/events.jsonl`.
 
 ### How it works
 
-```
-                          hook-loop.json
-                               │
-        ┌──────────────────────┼──────────────────────┐
-        │                      │                      │
-  codex.event_map        loop states          simulation
-        │                + transitions          (test only)
-        │                      │
-   ┌────┴────┐          EventSourcedLoopDriver
-   │ Codex   │              (state machine
-   │ hooks   │               recovery + gating)
-   └────┬────┘                  │        ┌─────┴─────┐
-        │                       │        │ Stop gate │
-        │              .hook-loop/events.jsonl └─────┘
-        │
-  .opencode/plugins/hook_loop.js
+```mermaid
+flowchart TD
+    DSL[hook-loop.json]
+    LOOP[loop states and transitions]
+    MAP[codex.event_map]
+    SIM[simulation test harness]
+    CODEX[Codex hooks]
+    OPENCODE[.opencode/plugins/hook_loop.js]
+    DRIVER[EventSourcedLoopDriver]
+    LOG[.hook-loop/events.jsonl]
+    GATE[Stop gate]
+
+    DSL --> LOOP
+    DSL --> MAP
+    DSL --> SIM
+    MAP --> CODEX
+    MAP --> OPENCODE
+    CODEX --> DRIVER
+    OPENCODE --> DRIVER
+    LOOP --> DRIVER
+    DRIVER --> LOG
+    LOG --> DRIVER
+    DRIVER --> GATE
 ```
 
-Every hook call recovers the current state from the event log, checks event_map rules, applies matching transitions, and records the result. `PreToolUse` guards risky commands. `Stop` blocks until a terminal state is reached.
+Every hook call recovers the current state from the event log, checks event_map rules, applies matching transitions, and records the result. `PreToolUse` guards risky commands. Codex `Stop` blocks until a terminal state is reached; opencode `session.idle` records the same stop decision without aborting the session worker.
 
 ## Requirements
 
