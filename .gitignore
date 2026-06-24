@@ -220,3 +220,27 @@ __marimo__/
 # spec
 .agents/skills/spec*
 .specify/
+
+# hook-loop runtime artifacts
+.hook-loop/
+.codex-home/cache/
+.codex-home/sessions/
+.codex-home/*.sqlite*
+.codex-home/shell_snapshots/
+.codex-home/models_cache.json
+.codex-home/tmp/
+.codex-home/.tmp/
+.codex-home/plugins/
+.codex-home/skills/
+.codex-home/installation_id
+experiments/gallery-check/
+experiments/smoke.txt
+experiments/done*.txt
+experiments/hello.txt
+experiments/hook-loop-pre-rerun-*
+experiments/hook-loop-exp2-*
+.codex-home/auth.json
+.opencode/plugins/hook_loop.js
+.codex-home/hooks.json
+.codex-home/config.toml
+experiments/hook-loop-exp2-pre-fix-*/

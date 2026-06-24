@@ -1,0 +1,75 @@
+{
+  "loop": {
+    "id": "approval_gate",
+    "initial_state": "backlog",
+    "states": ["backlog", "drafting", "pending_approval", "approved", "rejected", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "draft_ready",
+      "approval_requested",
+      "approval_granted",
+      "approval_denied",
+      "revise",
+      "finalize"
+    ],
+    "transitions": [
+      {"from": "backlog", "event": "draft_ready", "to": "drafting"},
+      {"from": "drafting", "event": "approval_requested", "to": "pending_approval"},
+      {"from": "pending_approval", "event": "approval_granted", "to": "approved"},
+      {"from": "approved", "event": "finalize", "to": "done"},
+      {"from": "pending_approval", "event": "approval_denied", "to": "rejected"},
+      {"from": "rejected", "event": "revise", "to": "drafting"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 8, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "backlog": [{"event": "draft_ready"}],
+      "drafting": [{"event": "approval_requested"}],
+      "pending_approval": [{"event": "approval_granted"}],
+      "approved": [{"event": "finalize"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "approval granted"}]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)draft ready"},
+        "emit": "draft_ready",
+        "comment": "backlog->drafting; operator hands over a draft"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)approval requested|submit for review"},
+        "emit": "approval_requested",
+        "comment": "drafting->pending_approval; enter the human-in-the-loop gate"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)approved|approval granted"},
+        "emit": "approval_granted",
+        "comment": "pending_approval->approved; human approves"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)rejected|approval denied"},
+        "emit": "approval_denied",
+        "comment": "pending_approval->rejected; human denies"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)revise|rework"},
+        "emit": "revise",
+        "comment": "rejected->drafting; revise and resubmit"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)finalize|ship|merge"},
+        "emit": "finalize",
+        "comment": "approved->done; finalize after approval"
+      }
+    ]
+  }
+}

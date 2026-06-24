@@ -1,0 +1,110 @@
+{
+  "loop": {
+    "id": "builder_evaluator",
+    "initial_state": "backlog",
+    "states": ["backlog", "building", "evidence_ready", "evaluating", "rework", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "feature_selected",
+      "evidence_recorded",
+      "review_requested",
+      "evaluator_passed",
+      "evaluator_failed",
+      "rework_done"
+    ],
+    "transitions": [
+      {"from": "backlog", "event": "feature_selected", "to": "building"},
+      {"from": "building", "event": "evidence_recorded", "to": "evidence_ready"},
+      {"from": "evidence_ready", "event": "review_requested", "to": "evaluating"},
+      {
+        "from": "evaluating",
+        "event": "evaluator_passed",
+        "to": "done",
+        "guards": ["evidence_bound_to_criteria"]
+      },
+      {"from": "evaluating", "event": "evaluator_failed", "to": "rework"},
+      {"from": "rework", "event": "rework_done", "to": "building"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 10, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "backlog": [{"event": "feature_selected"}],
+      "building": [
+        {"event": "evidence_recorded", "payload": {"evidence_id": "e1"}},
+        {"event": "evidence_recorded", "payload": {"evidence_id": "e2"}}
+      ],
+      "evidence_ready": [
+        {"event": "review_requested"},
+        {"event": "review_requested"}
+      ],
+      "rework": [{"event": "rework_done"}]
+    },
+    "verdicts": [
+      {"status": "NEEDS_WORK", "details": "evidence missing for criterion 3"},
+      {"status": "PASS", "details": "all criteria backed by evidence"}
+    ]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_not_match": "(?i)verdict|review|rework|pass|needs|evidence"},
+        "emit": "feature_selected",
+        "comment": "first generic user prompt kicks off the builder (backlog->building)"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "pytest|test|lint|mypy|git diff --check",
+          "exit_code": 0
+        },
+        "record": {
+          "event_type": "evidence_registered",
+          "actor": "codex",
+          "payload": {"kind": "verification"},
+          "include": ["command", "exit_code", "stdout"]
+        },
+        "emit": "evidence_recorded",
+        "comment": "building->evidence_ready once verification evidence is produced (default-FAIL contract)"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)review requested|ready for review"},
+        "emit": "review_requested",
+        "comment": "evidence_ready->evaluating; hand off to the fresh-context evaluator"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)PASS|verdict.*pass"},
+        "emit": "evaluator_passed",
+        "guard_satisfied": ["evidence_bound_to_criteria"],
+        "comment": "evaluating->done; independent evaluator verdict closes the loop"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)NEEDS_WORK|rework"},
+        "emit": "evaluator_failed",
+        "comment": "evaluating->rework; builder does not grade itself"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "pytest|test|lint|mypy|git diff --check",
+          "exit_code": 0
+        },
+        "record": {
+          "event_type": "rework_evidence_registered",
+          "actor": "codex",
+          "payload": {"kind": "rework_verification"},
+          "include": ["command", "exit_code", "stdout"]
+        },
+        "emit": "rework_done",
+        "comment": "rework->building after rework verification passes"
+      }
+    ]
+  }
+}

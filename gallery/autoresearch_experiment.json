@@ -1,0 +1,92 @@
+{
+  "loop": {
+    "id": "autoresearch_experiment",
+    "initial_state": "idle",
+    "states": ["idle", "init_experiment", "running", "logging", "keep", "discard", "checks_failed", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "experiment_init",
+      "experiment_run",
+      "experiment_log",
+      "metric_improved",
+      "metric_not_improved",
+      "checks_failed_event",
+      "commit",
+      "revert"
+    ],
+    "transitions": [
+      {"from": "idle", "event": "experiment_init", "to": "init_experiment"},
+      {"from": "init_experiment", "event": "experiment_run", "to": "running"},
+      {"from": "running", "event": "experiment_log", "to": "logging"},
+      {"from": "logging", "event": "metric_improved", "to": "keep"},
+      {"from": "logging", "event": "metric_not_improved", "to": "discard"},
+      {"from": "logging", "event": "checks_failed_event", "to": "checks_failed"},
+      {"from": "keep", "event": "commit", "to": "done"},
+      {"from": "discard", "event": "revert", "to": "idle"},
+      {"from": "checks_failed", "event": "revert", "to": "idle"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 8, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "idle": [{"event": "experiment_init"}],
+      "init_experiment": [{"event": "experiment_run"}],
+      "running": [{"event": "experiment_log"}],
+      "logging": [{"event": "metric_improved"}],
+      "keep": [{"event": "commit"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "metric improved over baseline"}]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "SessionStart",
+        "emit": "experiment_init",
+        "comment": "session start begins the experiment (idle->init_experiment)"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)experiment run|run experiment|start run"},
+        "emit": "experiment_run",
+        "comment": "init_experiment->running once the experiment is started"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Bash", "exit_code": 0},
+        "emit": "experiment_log",
+        "comment": "running->logging after the experiment command completes"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)metric improved|improved|better"},
+        "emit": "metric_improved",
+        "comment": "logging->keep; metric improved over baseline"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)metric not improved|worse|no improvement|regressed"},
+        "emit": "metric_not_improved",
+        "comment": "logging->discard; metric did not improve"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Bash", "command_match": "pytest|test|lint|mypy", "exit_code": 1},
+        "emit": "checks_failed_event",
+        "comment": "logging->checks_failed when checks exit non-zero"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Bash", "command_match": "git commit", "exit_code": 0},
+        "emit": "commit",
+        "comment": "keep->done after committing the improved experiment"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Bash", "command_match": "git revert|git checkout|git reset", "exit_code": 0},
+        "emit": "revert",
+        "comment": "discard/checks_failed->idle after reverting changes"
+      }
+    ]
+  }
+}

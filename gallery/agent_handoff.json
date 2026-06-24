@@ -1,0 +1,81 @@
+{
+  "loop": {
+    "id": "agent_handoff",
+    "initial_state": "session_start",
+    "states": ["session_start", "read_handoff", "implementing", "generate_evidence", "commit_handoff", "done", "stopped"],
+    "terminal_states": ["done", "stopped"],
+    "stop_state": "stopped",
+    "events": [
+      "handoff_read",
+      "implemented",
+      "evidence_generated",
+      "committed",
+      "session_closed"
+    ],
+    "transitions": [
+      {"from": "session_start", "event": "handoff_read", "to": "read_handoff"},
+      {"from": "read_handoff", "event": "implemented", "to": "implementing"},
+      {"from": "implementing", "event": "evidence_generated", "to": "generate_evidence"},
+      {"from": "generate_evidence", "event": "committed", "to": "commit_handoff"},
+      {"from": "commit_handoff", "event": "session_closed", "to": "done"}
+    ]
+  },
+  "simulation": {
+    "budget": {"max_turns": 8, "max_no_progress_turns": 2},
+    "agent_steps": {
+      "session_start": [{"event": "handoff_read"}],
+      "read_handoff": [{"event": "implemented"}],
+      "implementing": [{"event": "evidence_generated"}],
+      "generate_evidence": [{"event": "committed"}],
+      "commit_handoff": [{"event": "session_closed"}]
+    },
+    "verdicts": [{"status": "PASS", "details": "handoff committed"}]
+  },
+  "codex": {
+    "event_map": [
+      {
+        "codex_event": "SessionStart",
+        "emit": "handoff_read",
+        "comment": "session start begins the handoff (session_start->read_handoff)"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {"tool_name": "Write", "exit_code": 0},
+        "emit": "implemented",
+        "comment": "read_handoff->implementing once the agent writes implementation code"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "pytest|test|lint|mypy|git diff --check",
+          "exit_code": 0
+        },
+        "record": {
+          "event_type": "evidence_registered",
+          "actor": "codex",
+          "payload": {"kind": "verification"},
+          "include": ["command", "exit_code", "stdout"]
+        },
+        "emit": "evidence_generated",
+        "comment": "implementing->generate_evidence after verification passes"
+      },
+      {
+        "codex_event": "PostToolUse",
+        "when": {
+          "tool_name": "Bash",
+          "command_match": "git commit",
+          "exit_code": 0
+        },
+        "emit": "committed",
+        "comment": "generate_evidence->commit_handoff after git commit"
+      },
+      {
+        "codex_event": "UserPromptSubmit",
+        "when": {"prompt_match": "(?i)session closed|handoff done|finished"},
+        "emit": "session_closed",
+        "comment": "commit_handoff->done; explicit close signal"
+      }
+    ]
+  }
+}
